@@ -928,18 +928,25 @@ export default {
       }
       this.statusProjectReconcile = true;
 
-      let sparql = `
+      let sparql = `      
 
-        SELECT ?entity ?entityLabel ?entityDesc
+       SELECT ?entity ?entityLabel ?entityDesc (GROUP_CONCAT(?alias; SEPARATOR=", ") AS ?aliasObjects)
         WHERE 
         {
           ?entity wdt:P1 wd:${this.bulkInstanceOfBase}.
           optional{
             ?entity schema:description ?entityDesc .
           }
+          optional{
+            ?entity skos:altLabel ?alias .
+            FILTER (LANG(?alias) = "en")            
+          }
           SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }                    
         }
-        limit 10000
+        GROUP BY ?entity ?entityLabel ?entityDesc
+
+        LIMIT 10000
+
       
       `
       
@@ -958,7 +965,8 @@ export default {
         return {
           id: binding.entity.value.replace('http://base.semlab.io/entity/', ''),
           label: binding.entityLabel.value,
-          description: (binding.entityDesc) ? binding.entityDesc.value : null
+          description: (binding.entityDesc) ? binding.entityDesc.value : null,
+          alias: (binding.aliasObjects) ? binding.aliasObjects.value : null
         }
       });
 
@@ -967,7 +975,7 @@ export default {
 
       for (let i = 0; i < allLabels.length; i++) {
         let entity = allLabels[i];
-        prompt += `- ${entity.label} ${entity.description ? `(${entity.description})` : ''} - ID: ${entity.id}\n`;
+        prompt += `- ${entity.label} ${entity.alias ? `(Also known as: ${entity.alias})` : ''} ${entity.description ? `(${entity.description})` : ''} - ID: ${entity.id}\n`;
       }
       let promptEntities = []
       for (let type of Object.keys(this.entitiesByType).sort()){
