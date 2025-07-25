@@ -125,6 +125,11 @@ export default {
         if (response.success) {
           this.job = response.job_data
           this.$emit("jobStatus", this.job);
+        }else{
+          window.setTimeout(() => {
+            this.initialize();
+          }, 1000); // Retry after 1 second if the job data is not available
+
 
         }
       });
