@@ -140,6 +140,9 @@ def handle_login_validate(login_token):
 @socketio.on('get_document_status')
 def handle_get_document_status(job_data):
     # check if the job exists
+    if 'user' in job_data:
+        job_data["user"] = job_data["user"].lower()
+    
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json') as f:
             job_data = json.load(f)
@@ -184,9 +187,9 @@ def handle_get_ner(job_data):
 @socketio.on('update_document_status')
 def handle_update_document_status(job_data):
     # check if the job exists
-    print("-------->job_data", job_data, flush=True)
-    job_data["user"]=job_data["user"].lower()
 
+    if 'user' in job_data:
+        job_data["user"] = job_data["user"].lower()
 
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json') as f:
