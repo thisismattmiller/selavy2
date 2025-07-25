@@ -62,6 +62,8 @@ export default {
 
       statusProjectReconcile:null,
 
+      statusClassReconcile: null,
+
       workQueue1: false,
       workQueue2: false,
       workQueue3: false,
@@ -296,7 +298,7 @@ export default {
     },
 
 
-    async workEntity(internal_id){
+    async workEntity(internal_id,adHoc= false){
 
       let entity = this.entities[internal_id]
 
@@ -425,11 +427,12 @@ export default {
         entity.wikiError = true
       }
 
-
-      for (let queue of [this.workQueue1, this.workQueue2, this.workQueue3]){
-        let index = queue.indexOf(internal_id);
-        if (index > -1) {
-          queue.splice(index, 1); // Remove the entity from the queue
+      if (!adHoc){
+        for (let queue of [this.workQueue1, this.workQueue2, this.workQueue3]){
+          let index = queue.indexOf(internal_id);
+          if (index > -1) {
+            queue.splice(index, 1); // Remove the entity from the queue
+          }
         }
       }
       entity.wikiChecked = true
@@ -441,7 +444,7 @@ export default {
     },
 
     
-    async workBaseEntity(internal_id){
+    async workBaseEntity(internal_id,adHoc= false){
 
       let entity = this.entities[internal_id]
       console.log("Working:", entity.entity,entity)
@@ -587,10 +590,12 @@ export default {
         entity.wikiBaseNoGoodMatch = true;
       }
 
-      for (let queue of [this.baseWorkQueue1, this.baseWorkQueue2, this.baseWorkQueue3]){
-        let index = queue.indexOf(internal_id);
-        if (index > -1) {
-          queue.splice(index, 1); // Remove the entity from the queue
+      if (!adHoc){
+        for (let queue of [this.baseWorkQueue1, this.baseWorkQueue2, this.baseWorkQueue3]){
+          let index = queue.indexOf(internal_id);
+          if (index > -1) {
+            queue.splice(index, 1); // Remove the entity from the queue
+          }
         }
       }
       entity.wikiBaseChecked = true
@@ -627,6 +632,23 @@ export default {
       
     },
 
+    runSemlab(entity) {
+      // Run SemLab reconciliation for the entity
+      if (entity.internal_id){
+        this.workBaseEntity(entity.internal_id,true)
+      }else{
+        alert("Entity not found")
+      }
+    },
+
+    runWikidata(entity) {
+      // Run Wikidata reconciliation for the entity
+      if (entity.internal_id){
+        this.workEntity(entity.internal_id,true)
+      }else{
+        alert("Entity not found")
+      }
+    },
 
     
     workWikibaseQueue(){
@@ -926,7 +948,7 @@ export default {
         alert("Please select a class to align with");
         return;
       }
-      this.statusProjectReconcile = true;
+      this.statusClassReconcile = true;
 
       let sparql = `      
 
@@ -1010,7 +1032,7 @@ export default {
             let entity = response.response[i];
             // console.log("entity", entity)
             if (entity.qid) {
-              if (this.entities[entity.internal_id]){
+              if (this.entities[entity.internal_id] && (!this.entities[entity.internal_id].qid || this.entities[entity.internal_id].qid == null || this.entities[entity.internal_id].qid == '')) {
                 this.entities[entity.internal_id].qid = entity.qid;
                 // console.log("this.entities[entity.internal_id]",this.entities[entity.internal_id])
               }else{
@@ -1053,7 +1075,7 @@ export default {
           
         }
 
-        this.statusProjectReconcile = null;
+        this.statusClassReconcile = null;
 
       })
 
@@ -1072,12 +1094,19 @@ export default {
       this.statusProjectReconcile = true;
       // Fetch the list of SemLab projects
       let sparql = `
-        SELECT ?entity ?entityLabel ?instanceOf ?instanceOfLabel
+        SELECT ?entity ?entityLabel ?instanceOf ?instanceOfLabel ?entityDesc (GROUP_CONCAT(?alias; SEPARATOR=", ") AS ?aliasObjects)
         WHERE 
-        {
-          
+        {          
           ?entity wdt:P11 wd:${this.useProjectBulkAlign}.
-          ?entity wdt:P1 ?instanceOf.
+          ?entity wdt:P1 ?instanceOf.          
+          optional{
+            ?entity schema:description ?entityDesc .
+          }
+          optional{
+            ?entity skos:altLabel ?alias .
+            FILTER (LANG(?alias) = "en")            
+          }         
+          
           SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
           
           FILTER NOT EXISTS {?entity wdt:P1 wd:Q20664 } 
@@ -1087,13 +1116,11 @@ export default {
           FILTER NOT EXISTS {?entity wdt:P1 wd:Q27513 }   
           FILTER NOT EXISTS {?entity wdt:P1 wd:Q19069 }   
           FILTER NOT EXISTS {?entity wdt:P1 wd:Q19063 }   
-
           
         }
-
-
-
+        GROUP BY ?entity ?entityLabel ?instanceOf ?instanceOfLabel ?entityDesc
         limit 10000   
+
       `
       
       const sparqlUrl = `https://query.semlab.io/proxy/wdqs/bigdata/namespace/wdq/sparql`;
@@ -1113,6 +1140,9 @@ export default {
           label: binding.entityLabel.value,
           instanceOfId: binding.instanceOf.value.replace('http://base.semlab.io/entity/', ''),
           instanceOfLabel: binding.instanceOfLabel.value,
+          description: (binding.entityDesc) ? binding.entityDesc.value : null,
+          alias: (binding.aliasObjects) ? binding.aliasObjects.value : null
+
         }
       });
 
@@ -1121,7 +1151,7 @@ export default {
 
       for (let i = 0; i < allLabels.length; i++) {
         let entity = allLabels[i];
-        prompt += `- ${entity.label} (${entity.instanceOfLabel}) - ID: ${entity.id}\n`;
+        prompt += `- ${entity.label} (${entity.instanceOfLabel}) ${entity.alias ? `(Also known as: ${entity.alias})` : ''} ${entity.description ? `(${entity.description})` : ''} - ID: ${entity.id}\n`;
       }
       let promptEntities = []
       for (let type of Object.keys(this.entitiesByType).sort()){
@@ -1154,7 +1184,7 @@ export default {
             let entity = response.response[i];
             // console.log("entity", entity)
             if (entity.qid) {
-              if (this.entities[entity.internal_id]){
+              if (this.entities[entity.internal_id] && (!this.entities[entity.internal_id].qid || this.entities[entity.internal_id].qid == null || this.entities[entity.internal_id].qid == '')) {
                 this.entities[entity.internal_id].qid = entity.qid;
                 // console.log("this.entities[entity.internal_id]",this.entities[entity.internal_id])
               }else{
@@ -1426,7 +1456,8 @@ export default {
                   <option value="" disabled selected>Wikibase Type</option>
                   <option v-for="type of semlabClasses" :key="type" :value="type.qid">{{ type.label }} ({{ type.qid }})</option>
                 </select>
-                <button v-if="!statusProjectReconcile" class="button" @click="buildPromptByClass" style="height: 1.5em;">Go</button>
+                <button v-if="!statusClassReconcile" class="button" @click="buildPromptByClass" style="height: 1.5em;">Go</button>
+                <font-awesome-icon class="spin" v-else  style="font-size: 2em;" :icon="['fas', 'hourglass-half']" />
 
 
                 <hr class="actions-hr">
@@ -1489,6 +1520,7 @@ export default {
               <th>Wikidata</th>
               <th>Blocks</th>
               <th>Actions</th>
+              <th>Test</th>
             </tr>
           </thead>
           <tbody>
@@ -1603,7 +1635,14 @@ export default {
 
                   </td>
                   <td>{{ entity.blocks.join(', ') }}</td>
-                  <td><button class="button" @click="details(entity)">Details</button></td>
+                  <td>
+                    <button class="button" @click="details(entity)">Details</button>
+                  </td>
+                  <td>
+                    <button class="button" @click="runSemlab(entity)">SemLab</button>
+                    <button class="button" @click="runWikidata(entity)">Wiki</button>
+
+                  </td>
                 </tr>
                 <tr v-if="activeEntity.internal_id == entity.internal_id">
                   <td colspan="6">

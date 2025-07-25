@@ -229,6 +229,23 @@ def handle_get_document_diffs(job_data):
     else:
         return {'success': False, 'error': 'Doc not found'}
 
+@socketio.on('update_document_markup')
+def handle_update_document_markup(job_data):
+    # check if the job exists
+    if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'):
+        file_data = None
+        with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json') as f:
+            file_data = json.load(f)
+        
+        file_data['text_markup'] = job_data['text_markup']
+
+        json.dump(file_data, open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json','w'), indent=2)
+        return {'success': True, 'error': None}
+
+    else:
+        return {'success': False, 'error': 'Doc not found'}
+
+
 
 
 @socketio.on('judge_diff')

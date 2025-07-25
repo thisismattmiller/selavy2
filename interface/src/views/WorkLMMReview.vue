@@ -29,6 +29,8 @@ export default {
       judgeStatus: null,
       workflowComplete: false,
 
+      saveButtonText: "Saved",
+
             
     }
   },
@@ -79,6 +81,17 @@ export default {
       
     },
 
+    saveMarkup() {
+      // Save the document markup
+      socket.emit('update_document_markup', {doc:this.documentId, user:this.user, text_markup:this.documentMarkup}, (response) => {
+        if (response.success) {
+          console.log("Document markup saved successfully");
+          this.saveButtonText = "Saved";
+        } else {
+          console.error("Error saving document markup:", response.error);
+        }
+      });
+    },
 
 
     markComplete() {
@@ -218,7 +231,8 @@ export default {
 
           </div>
         </div>
-        <textarea v-model="documentMarkup"  placeholder="Document Diffs"></textarea>
+        <button class="button" @click="saveMarkup">{{ saveButtonText }}</button>
+        <textarea v-model="documentMarkup" @input="saveButtonText='Save Markup'" placeholder="Document Diffs"></textarea>
 
 
       </div>
