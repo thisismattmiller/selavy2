@@ -1,0 +1,11 @@
+flask
+vertexai
+flask-socketio
+openai
+pydantic
+twisted
+wikibaseintegrator
+flask_session
+google-genai
+requests
+beautifulsoup4

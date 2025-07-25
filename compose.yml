@@ -1,0 +1,21 @@
+services:
+  prelavy: 
+    build:
+      context: ./
+      dockerfile: Dockerfile      
+    # flask requires SIGINT to stop gracefully
+    # (default stop signal from Compose is SIGTERM)
+    stop_signal: SIGINT
+    volumes:
+      - ./app:/app
+      - ./data:/data
+
+      
+    environment:
+      - FLASK_RUN_PORT=8484
+      - FLASK_RUN_HOST=0.0.0.0
+
+    env_file: "api.env"
+
+    ports:
+      - '8484:8484'
