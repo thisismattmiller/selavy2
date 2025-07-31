@@ -171,4 +171,12 @@ export default {
 
 }
 
+@keyframes flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.2; /* Adjust the dimmed opacity */
+  }
+}
 </style>
