@@ -290,3 +290,71 @@ def ask_llm_compare_wikidata_entity(prompt):
 		print("Error decoding JSON: ", e)
 		return {'success': False, 'response': None, 'log': f"Error decoding JSON: {e} \nResponse text: {response_text}\n-------"}
 
+
+
+def ask_llm_normalize_labels(prompt):
+
+	
+	model = GOOGLE_GEMINI_MODEL
+	contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text=prompt),
+            ],
+        ),
+    ]
+	generate_content_config = types.GenerateContentConfig(
+        temperature=0,
+        thinking_config = types.ThinkingConfig(
+            thinking_budget=-1,
+        ),
+        response_mime_type="application/json",
+        response_schema=genai.types.Schema(
+            type = genai.types.Type.ARRAY,
+            items = genai.types.Schema(
+                type = genai.types.Type.OBJECT,
+                required = ["internal_id", "labels", "normalizedLabels"],
+                properties = {
+                    "internal_id": genai.types.Schema(
+                        type = genai.types.Type.STRING,
+                    ),
+                    "labels": genai.types.Schema(
+                        type = genai.types.Type.ARRAY,
+                        items = genai.types.Schema(
+                            type = genai.types.Type.STRING,
+                        ),
+                    ),
+                    "normalizedLabels": genai.types.Schema(
+                        type = genai.types.Type.ARRAY,
+                        items = genai.types.Schema(
+                            type = genai.types.Type.STRING,
+                        ),
+                    ),
+                },
+            ),
+        ),
+    )
+
+	response_text = ""
+	for chunk in client.models.generate_content_stream(
+		model=model,
+		contents=contents,
+		config=generate_content_config,
+	):
+		# print(".",end="", flush=True)
+		# print("", flush=True)
+		print(chunk.text, end="")
+		if chunk.text != None:
+			response_text = response_text + chunk.text
+
+	try:
+		print("Response from LLM: ", response_text, flush=True)
+
+		response_text = json.loads(response_text)
+		print("response_text: ", response_text, flush=True)
+		return {'success': True, 'response': response_text}
+	except json.JSONDecodeError as e:
+		print("Error decoding JSON: ", e)
+		return {'success': False, 'response': None, 'log': f"Error decoding JSON: {e} \nResponse text: {response_text}\n-------"}
+

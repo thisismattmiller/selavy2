@@ -14,7 +14,10 @@ def build_doc_diffs(text_orginal, text_processed):
 
 
 	text_processed_normalized = text_processed.replace("\n", " ")
+	text_processed_normalized = text_processed.replace("\t", " ")
+	
 	text_orginal_normalized = text_orginal.replace("\n", " ")
+	text_orginal_normalized = text_orginal.replace("\t", " ")
 
 	text_processed_normalized = text_processed_normalized.replace("<BLOCKBREAK/>", "")
 
@@ -33,8 +36,15 @@ def build_doc_diffs(text_orginal, text_processed):
 	text_processed_normalized = re.sub(r"\s+", " ", text_processed_normalized)
 	text_orginal_normalized = re.sub(r"\s+", " ", text_orginal_normalized)
 
+	# text_orginal_normalized = text_orginal_normalized.replace("­-", "-")
+	# text_orginal_normalized = text_orginal_normalized.replace("­-", "-")
+
+
+
+
 	text_processed_normalized = text_processed_normalized.replace("- ", "")
 	text_orginal_normalized = text_orginal_normalized.replace("- ", "")
+
 
 
 
@@ -131,8 +141,24 @@ def build_doc_diffs(text_orginal, text_processed):
 					# check based off the processed text first
 					next_processed_word = text_processed_normalized_split[process_text_index+look_next_word_increase_by]
 
-					print("lookign for ",next_processed_word)
+					print("lookign for ",next_processed_word,flush=True)
 					for modified_orginal_text_index in range(orginal_text_index, orginal_text_index+5):
+
+						# if len(text_orginal_normalized_split) == modified_orginal_text_index:
+						# 	print("We are at the end of the orginal text, breaking out of the loop",flush=True)
+						# 	break_loop=True
+						# 	break
+
+						try:
+							test = text_orginal_normalized_split[modified_orginal_text_index]
+						except:
+							continue
+
+						print(len(text_orginal_normalized_split),modified_orginal_text_index,flush=True)
+						print(text_orginal_normalized_split[modified_orginal_text_index],flush=True	)
+						print("---------------",flush=True)
+
+
 
 						if text_orginal_normalized_split[modified_orginal_text_index] == next_processed_word:
 							print("Found it at index", modified_orginal_text_index)

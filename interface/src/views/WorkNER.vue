@@ -64,6 +64,9 @@ export default {
 
       statusClassReconcile: null,
 
+      statusLabelNormalize:null,
+
+
       workQueue1: false,
       workQueue2: false,
       workQueue3: false,
@@ -418,6 +421,19 @@ export default {
 
             delete entity.wikiCheckedStatus 
             break
+          }else{
+
+            let badMatchType
+            for (let d of compareData){
+              if (d.p == 'instance of') {
+                badMatchType = d.o;
+                break
+              }
+            }
+
+            console.log("No match found for entity", entity.entity, "with qid", toReconcile.qid, badMatchType, compareResult)
+
+
           }         
         }
       }else{
@@ -826,7 +842,11 @@ export default {
     async buildCompareOrderPrompt(entity) {
             
       try {
-              let searchUrl = `https://www.wikidata.org/w/api.php?action=query&format=json&list=search&srsearch=${encodeURIComponent(entity.entity)}&utf8=&srprop=snippet|titlesnippet|redirecttitle|sectiontitle&origin=*&srlimit=10`;
+              let searchLabel = entity.entity
+              if (entity.useLabel){
+                searchLabel = entity.useLabel
+              }
+              let searchUrl = `https://www.wikidata.org/w/api.php?action=query&format=json&list=search&srsearch=${encodeURIComponent(searchLabel)}&utf8=&srprop=snippet|titlesnippet|redirecttitle|sectiontitle&origin=*&srlimit=10`;
               const response = await fetch(searchUrl);
               const data = await response.json();
 
@@ -857,7 +877,9 @@ export default {
               }
               }
 
-              let prompt = `The ${entity.type}: "${entity.entity}" described in this text:\n`
+              let useLabel = entity.useLabel ? entity.useLabel : entity.entity;
+
+              let prompt = `The ${entity.type}: "${useLabel}" described in this text:\n`
               prompt += `"${contextText}"\n\n`
 
               prompt += `Below are the JSON search results for looking for this ${entity.type} in the database. Each object in the JSON array has a null 'order' value, change it to match the order the results should be investiaged further from mosty likely of being a match (1) to least likely of being a match (10, or length of array) modify the JSON and return it as VALID JSON. If there appear to be no good matches return [{"noMatch":true}] \n\n`
@@ -925,7 +947,9 @@ export default {
               }
               }
 
-              let prompt = `The ${entity.type}: "${entity.entity}" described in this text:\n`
+              let useLabel = entity.useLabel ? entity.useLabel : entity.entity;
+
+              let prompt = `The ${entity.type}: "${useLabel}" described in this text:\n`
               prompt += `"${contextText}"\n\n`
 
               prompt += `Below are the JSON search results for looking for this ${entity.type} in the database. Each object in the JSON array has a null 'order' value, change it to match the order the results should be investiaged further from mosty likely of being a match (1) to least likely of being a match (10, or length of array) modify the JSON and return it as VALID JSON. If there appear to be no good matches return [{"noMatch":true}] \n\n`
@@ -1006,7 +1030,7 @@ export default {
           for (let entity of this.entitiesByType[type]){
             if (entity.blocks.length > 0){
               promptEntities.push({
-                entity: entity.entity,
+                entity: (entity.useLabel ? entity.useLabel : entity.entity),
                 type: entity.type,
                 internal_id: entity.internal_id,
                 qid: null
@@ -1158,7 +1182,7 @@ export default {
         for (let entity of this.entitiesByType[type]){
           if (entity.blocks.length > 0){
             promptEntities.push({
-              entity: entity.entity,
+              entity: (entity.useLabel ? entity.useLabel : entity.entity),
               type: entity.type,
               internal_id: entity.internal_id,
               qid: null
@@ -1233,6 +1257,66 @@ export default {
 
     },
 
+    async normalizeLabels(){
+
+      this.statusLabelNormalize = true;
+
+      let sendList = []
+      let sendBlocks = []
+      console.log(this.entities)
+      for (let eId in this.entities){
+        let entity = this.entities[eId];
+        sendList.push({
+          internal_id: entity.internal_id,
+          labels: entity.labels,
+          normalizedLabels: []
+        });
+        if (sendBlocks.indexOf(entity.blocks[0]) == -1){
+          sendBlocks.push(entity.blocks[0]);
+        }
+      }
+
+      let allBlockText = sendBlocks.map(b => this.blocks[b].clean).join(" ");
+
+
+      let prompt = `Normalize the words in this list of objects, normalize the labels in the key "labels", if they have honorifics remove them, if they are a shortened version of the entity make it the fuller form, make the term more search friendly if you were searching Wikipedia for the term. Do not invent names or expand the word without strong evidence, if you cannot expand it return it as it is. After the JSON below is the text the names are found in, use this text to help expand the name. Return JSON Only.`
+      prompt += `\n\nJSON:\n`
+      prompt += JSON.stringify(sendList, null, 2);
+      prompt += `\n\nText:\n"${allBlockText}"\n\n`
+      console.log(prompt)
+
+
+      // let response = await asyncEmit('ask_llm_normalize_labels', prompt);
+
+      let response = {"success":true,"response":[{"internal_id":"1","labels":["Art Albiston"],"normalizedLabels":["Art Albiston"]},{"internal_id":"2","labels":["Alexander Offset Co."],"normalizedLabels":["Alexander Offset Company"]},{"internal_id":"3","labels":["W. Barry"],"normalizedLabels":["W. Barry"]},{"internal_id":"4","labels":["Genie Productions, Inc."],"normalizedLabels":["Genie Productions Incorporated"]},{"internal_id":"5","labels":["Mr. Botz"],"normalizedLabels":["Botz"]},{"internal_id":"6","labels":["Sam Kass"],"normalizedLabels":["Sam Kass"]},{"internal_id":"7","labels":["Olga Kluver"],"normalizedLabels":["Olga Kluver"]},{"internal_id":"8","labels":["Suzanne Konigsberg"],"normalizedLabels":["Suzanne Konigsberg"]},{"internal_id":"9","labels":["Joel Lucas"],"normalizedLabels":["Joel Lucas"]},{"internal_id":"10","labels":["Colonel Lutz"],"normalizedLabels":["Lutz"]},{"internal_id":"11","labels":["Howard Marks Advertising"],"normalizedLabels":["Howard Marks Advertising"]},{"internal_id":"12","labels":["Norman Craig & Kummel, Inc."],"normalizedLabels":["Norman Craig & Kummel Incorporated"]},{"internal_id":"13","labels":["Maury Oren"],"normalizedLabels":["Maury Oren"]},{"internal_id":"14","labels":["Ruder and Finn, Inc."],"normalizedLabels":["Ruder and Finn Incorporated"]},{"internal_id":"15","labels":["Alice Schwebke"],"normalizedLabels":["Alice Schwebke"]},{"internal_id":"16","labels":["Jeff Strickler"],"normalizedLabels":["Jeff Strickler"]},{"internal_id":"17","labels":["Nancy Rose Chandler"],"normalizedLabels":["Nancy Rose Chandler"]},{"internal_id":"18","labels":["Barbara Jarvis"],"normalizedLabels":["Barbara Jarvis"]},{"internal_id":"19","labels":["Jim Brady"],"normalizedLabels":["Jim Brady"]},{"internal_id":"20","labels":["Gloria Bryant"],"normalizedLabels":["Gloria Bryant"]},{"internal_id":"21","labels":["Howard Marks"],"normalizedLabels":["Howard Marks"]},{"internal_id":"22","labels":["Mount Sinai Sleep Laboratory"],"normalizedLabels":["Mount Sinai Sleep Laboratory"]},{"internal_id":"23","labels":["Peter Moore"],"normalizedLabels":["Peter Moore"]},{"internal_id":"24","labels":["David Long"],"normalizedLabels":["David Long"]},{"internal_id":"25","labels":["Coltronics"],"normalizedLabels":["Coltronics"]},{"internal_id":"26","labels":["Ditta Agrippa"],"normalizedLabels":["Ditta Agrippa"]},{"internal_id":"27","labels":["Rome"],"normalizedLabels":["Rome"]},{"internal_id":"28","labels":["Downtown Community School"],"normalizedLabels":["Downtown Community School"]},{"internal_id":"29","labels":["Joseph M. Fallica"],"normalizedLabels":["Joseph M. Fallica"]},{"internal_id":"30","labels":["Federated Electronics"],"normalizedLabels":["Federated Electronics"]},{"internal_id":"31","labels":["Flexi-Optics"],"normalizedLabels":["Flexi-Optics"]},{"internal_id":"32","labels":["Rubin Gorowitz"],"normalizedLabels":["Rubin Gorowitz"]},{"internal_id":"33","labels":["Linda Perlman"],"normalizedLabels":["Linda Perlman"]},{"internal_id":"34","labels":["Conrad Pologe"],"normalizedLabels":["Conrad Pologe"]},{"internal_id":"35","labels":["John Powers"],"normalizedLabels":["John Powers"]},{"internal_id":"36","labels":["Ralsen-Grocraft-Andors Press Corp."],"normalizedLabels":["Ralsen-Grocraft-Andors Press Corporation"]},{"internal_id":"37","labels":["Suzan Rolfe"],"normalizedLabels":["Suzan Rolfe"]},{"internal_id":"38","labels":["Robert Rauschenberg","Robert Rauschenberg's","Rauschenberg's","Bob"],"normalizedLabels":["Robert Rauschenberg"]},{"internal_id":"39","labels":["RGA Press"],"normalizedLabels":["RGA Press"]},{"internal_id":"40","labels":["Pontus Hulten"],"normalizedLabels":["Pontus Hulten"]},{"internal_id":"41","labels":["Frank Konigsberg"],"normalizedLabels":["Frank Konigsberg"]},{"internal_id":"42","labels":["Herb Schneider","Herb"],"normalizedLabels":["Herb Schneider"]},{"internal_id":"43","labels":["Ronald Hobbs"],"normalizedLabels":["Ronald Hobbs"]},{"internal_id":"44","labels":["Tom Slater"],"normalizedLabels":["Tom Slater"]},{"internal_id":"45","labels":["Jennifer Tipton"],"normalizedLabels":["Jennifer Tipton"]},{"internal_id":"46","labels":["Beverly Emmonds"],"normalizedLabels":["Beverly Emmonds"]},{"internal_id":"47","labels":["Jey Bell"],"normalizedLabels":["Jey Bell"]},{"internal_id":"48","labels":["Alphonse Schilling"],"normalizedLabels":["Alphonse Schilling"]},{"internal_id":"49","labels":["Sid Gross"],"normalizedLabels":["Sid Gross"]},{"internal_id":"50","labels":["Hartig and Sons"],"normalizedLabels":["Hartig and Sons"]},{"internal_id":"51","labels":["Joanne Santo"],"normalizedLabels":["Joanne Santo"]},{"internal_id":"52","labels":["Thelma Schoonmacher"],"normalizedLabels":["Thelma Schoonmacher"]},{"internal_id":"53","labels":["Philip Idoni"],"normalizedLabels":["Philip Idoni"]},{"internal_id":"54","labels":["Sue Hartnett"],"normalizedLabels":["Sue Hartnett"]},{"internal_id":"55","labels":["Eleanor Howard"],"normalizedLabels":["Eleanor Howard"]},{"internal_id":"56","labels":["I. F. Jackson Electric Co."],"normalizedLabels":["I. F. Jackson Electric Company"]},{"internal_id":"57","labels":["Nina Kaiden"],"normalizedLabels":["Nina Kaiden"]},{"internal_id":"58","labels":["Weltz Ad Service Typography Co."],"normalizedLabels":["Weltz Ad Service Typography Company"]},{"internal_id":"59","labels":["Simone Whitman"],"normalizedLabels":["Simone Whitman"]},{"internal_id":"60","labels":["Georgelle Williams"],"normalizedLabels":["Georgelle Williams"]},{"internal_id":"61","labels":["Per Biorn"],"normalizedLabels":["Per Biorn"]},{"internal_id":"62","labels":["Copenhagen"],"normalizedLabels":["Copenhagen"]},{"internal_id":"63","labels":["Lucinda Childs","Lucinda"],"normalizedLabels":["Lucinda Childs"]},{"internal_id":"64","labels":["TEEM","TEEM system"],"normalizedLabels":["TEEM system"]},{"internal_id":"65","labels":["Yvonne Rainer","Rainer","Yvonne"],"normalizedLabels":["Yvonne Rainer"]},{"internal_id":"66","labels":["John Cage","John Cage's","Cage's"],"normalizedLabels":["John Cage"]},{"internal_id":"67","labels":["Los Angeles"],"normalizedLabels":["Los Angeles"]},{"internal_id":"68","labels":["Merce Cunningham Dance Company","Cunningham Dance Company"],"normalizedLabels":["Merce Cunningham Dance Company"]},{"internal_id":"69","labels":["Silence"],"normalizedLabels":["Silence"]},{"internal_id":"70","labels":["Irfan Camlibel"],"normalizedLabels":["Irfan Camlibel"]},{"internal_id":"71","labels":["Istanbul"],"normalizedLabels":["Istanbul"]},{"internal_id":"72","labels":["Judson Dance Theater"],"normalizedLabels":["Judson Dance Theater"]},{"internal_id":"73","labels":["Sarah Lawrence Cortese"],"normalizedLabels":["Sarah Lawrence Cortese"]},{"internal_id":"74","labels":["Mia Slavenska"],"normalizedLabels":["Mia Slavenska"]},{"internal_id":"75","labels":["Merce Cunningham","Merce Cunningham's","Cunningham"],"normalizedLabels":["Merce Cunningham"]},{"internal_id":"76","labels":["Cecil Coker","Cecil"],"normalizedLabels":["Cecil Coker"]},{"internal_id":"77","labels":["Kewanee"],"normalizedLabels":["Kewanee"]},{"internal_id":"78","labels":["Mississippi"],"normalizedLabels":["Mississippi"]},{"internal_id":"79","labels":["Philharmonic Hall"],"normalizedLabels":["Philharmonic Hall"]},{"internal_id":"80","labels":["Linoleum"],"normalizedLabels":["Linoleum"]},{"internal_id":"81","labels":["Pete Cumminski","Pete"],"normalizedLabels":["Pete Cumminski"]},{"internal_id":"82","labels":["Hasbrouch Heights"],"normalizedLabels":["Hasbrouch Heights"]},{"internal_id":"83","labels":["N.J."],"normalizedLabels":["New Jersey"]},{"internal_id":"84","labels":["Alex Hay","Hay","Alex"],"normalizedLabels":["Alex Hay"]},{"internal_id":"85","labels":["Oyvind Fahlstrom","Oyvind"],"normalizedLabels":["Oyvind Fahlstrom"]},{"internal_id":"86","labels":["Brazil"],"normalizedLabels":["Brazil"]},{"internal_id":"87","labels":["Sweden"],"normalizedLabels":["Sweden"]},{"internal_id":"88","labels":["Italy"],"normalizedLabels":["Italy"]},{"internal_id":"89","labels":["France"],"normalizedLabels":["France"]},{"internal_id":"90","labels":["U.S.A.","U. S."],"normalizedLabels":["United States of America"]},{"internal_id":"91","labels":["Venice Biennale"],"normalizedLabels":["Venice Biennale"]},{"internal_id":"92","labels":["Stockholm"],"normalizedLabels":["Stockholm"]},{"internal_id":"93","labels":["Kisses Sweeter than Wine"],"normalizedLabels":["Kisses Sweeter than Wine"]},{"internal_id":"94","labels":["America"],"normalizedLabels":["America"]},{"internal_id":"95","labels":["Janis Gallery"],"normalizedLabels":["Janis Gallery"]},{"internal_id":"96","labels":["Ralph Flynn"],"normalizedLabels":["Ralph Flynn"]},{"internal_id":"97","labels":["Andover"],"normalizedLabels":["Andover"]},{"internal_id":"98","labels":["Massachusetts"],"normalizedLabels":["Massachusetts"]},{"internal_id":"99","labels":["Boston"],"normalizedLabels":["Boston"]},{"internal_id":"100","labels":["Fred Waldhauer","Fred"],"normalizedLabels":["Fred Waldhauer"]},{"internal_id":"101","labels":["Florida"],"normalizedLabels":["Florida"]},{"internal_id":"102","labels":["Leo Castelli"],"normalizedLabels":["Leo Castelli"]},{"internal_id":"103","labels":["Deborah Hay","Deborah Hay's"],"normalizedLabels":["Deborah Hay"]},{"internal_id":"104","labels":["Brooklyn"],"normalizedLabels":["Brooklyn"]},{"internal_id":"105","labels":["Europe"],"normalizedLabels":["Europe"]},{"internal_id":"106","labels":["Asia"],"normalizedLabels":["Asia"]},{"internal_id":"107","labels":["Summer 1965"],"normalizedLabels":["Summer 1965"]},{"internal_id":"108","labels":["Ken Harsell"],"normalizedLabels":["Ken Harsell"]},{"internal_id":"109","labels":["Elizabeth"],"normalizedLabels":["Elizabeth"]},{"internal_id":"110","labels":["Larry Heilos","Larry"],"normalizedLabels":["Larry Heilos"]},{"internal_id":"111","labels":["Japan"],"normalizedLabels":["Japan"]},{"internal_id":"112","labels":["Peter Hirsch","Peter"],"normalizedLabels":["Peter Hirsch"]},{"internal_id":"113","labels":["Germany"],"normalizedLabels":["Germany"]},{"internal_id":"114","labels":["Harold Hodges","Harold"],"normalizedLabels":["Harold Hodges"]},{"internal_id":"115","labels":["Jean Tingueley's"],"normalizedLabels":["Jean Tinguely"]},{"internal_id":"116","labels":["self-destructive machine"],"normalizedLabels":["self-destructive machine"]},{"internal_id":"117","labels":["1960"],"normalizedLabels":["1960"]},{"internal_id":"118","labels":["Oracle"],"normalizedLabels":["Oracle"]},{"internal_id":"119","labels":["Bela Julesz"],"normalizedLabels":["Bela Julesz"]},{"internal_id":"120","labels":["Budapest"],"normalizedLabels":["Budapest"]},{"internal_id":"121","labels":["Sensory and Perceptual Processes Department"],"normalizedLabels":["Sensory and Perceptual Processes Department"]},{"internal_id":"122","labels":["Bell Labs","Bell"],"normalizedLabels":["Bell Labs"]},{"internal_id":"123","labels":["Bill Kaminski","Bill"],"normalizedLabels":["Bill Kaminski"]},{"internal_id":"124","labels":["FCC"],"normalizedLabels":["Federal Communications Commission"]},{"internal_id":"125","labels":["Rudy Kerl"],"normalizedLabels":["Rudy Kerl"]},{"internal_id":"126","labels":["Bob Kieronski"],"normalizedLabels":["Bob Kieronski"]},{"internal_id":"127","labels":["Philadelphia"],"normalizedLabels":["Philadelphia"]},{"internal_id":"128","labels":["Vochrome"],"normalizedLabels":["Vochrome"]},{"internal_id":"129","labels":["David Tudor","David's"],"normalizedLabels":["David Tudor"]},{"internal_id":"130","labels":["Louis Maggi","Louis"],"normalizedLabels":["Louis Maggi"]},{"internal_id":"131","labels":["Max Matthews"],"normalizedLabels":["Max Matthews"]},{"internal_id":"132","labels":["Columbus"],"normalizedLabels":["Columbus"]},{"internal_id":"133","labels":["Nebraska"],"normalizedLabels":["Nebraska"]},{"internal_id":"134","labels":["Behaviorial Research Laboratory"],"normalizedLabels":["Behavioral Research Laboratory"]},{"internal_id":"135","labels":["Jim McGee"],"normalizedLabels":["Jim McGee"]},{"internal_id":"136","labels":["Illinois"],"normalizedLabels":["Illinois"]},{"internal_id":"137","labels":["Steve Paxton","Steve","Steve Paxton's"],"normalizedLabels":["Steve Paxton"]},{"internal_id":"138","labels":["Surplus Dance Theater"],"normalizedLabels":["Surplus Dance Theater"]},{"internal_id":"139","labels":["1964"],"normalizedLabels":["1964"]},{"internal_id":"140","labels":["First New York Theater Rally"],"normalizedLabels":["First New York Theater Rally"]},{"internal_id":"141","labels":["1965"],"normalizedLabels":["1965"]},{"internal_id":"142","labels":["John Pierce"],"normalizedLabels":["John Pierce"]},{"internal_id":"143","labels":["Stretch Winslow","Stretch"],"normalizedLabels":["Stretch Winslow"]},{"internal_id":"144","labels":["1925"],"normalizedLabels":["1925"]},{"internal_id":"145","labels":["Port Arthur"],"normalizedLabels":["Port Arthur"]},{"internal_id":"146","labels":["Texas"],"normalizedLabels":["Texas"]},{"internal_id":"147","labels":["1955-65"],"normalizedLabels":["1955-1965"]},{"internal_id":"148","labels":["Paul Taylor","Taylor"],"normalizedLabels":["Paul Taylor"]},{"internal_id":"149","labels":["1957-59"],"normalizedLabels":["1957-1959"]},{"internal_id":"150","labels":["Dunn"],"normalizedLabels":["Dunn"]},{"internal_id":"151","labels":["Collaboration for David Tudor"],"normalizedLabels":["Collaboration for David Tudor"]},{"internal_id":"152","labels":["1961"],"normalizedLabels":["1961"]},{"internal_id":"153","labels":["The Construction of Boston"],"normalizedLabels":["The Construction of Boston"]},{"internal_id":"154","labels":["1962"],"normalizedLabels":["1962"]},{"internal_id":"155","labels":["Pelican"],"normalizedLabels":["Pelican"]},{"internal_id":"156","labels":["1963"],"normalizedLabels":["1963"]},{"internal_id":"157","labels":["Shotput"],"normalizedLabels":["Shotput"]},{"internal_id":"158","labels":["Elgin Tie"],"normalizedLabels":["Elgin Tie"]},{"internal_id":"159","labels":["Spring Training"],"normalizedLabels":["Spring Training"]},{"internal_id":"160","labels":["Map Room I"],"normalizedLabels":["Map Room I"]},{"internal_id":"161","labels":["Map Room II"],"normalizedLabels":["Map Room II"]},{"internal_id":"162","labels":["1966"],"normalizedLabels":["1966"]},{"internal_id":"163","labels":["Open Score"],"normalizedLabels":["Open Score"]},{"internal_id":"164","labels":["9 Evenings"],"normalizedLabels":["9 Evenings"]},{"internal_id":"165","labels":["Robby Robinson","Robby's"],"normalizedLabels":["Robby Robinson"]},{"internal_id":"166","labels":["Atlantic City"],"normalizedLabels":["Atlantic City"]},{"internal_id":"167","labels":["Bebek"],"normalizedLabels":["Bebek"]},{"internal_id":"168","labels":["Turkey"],"normalizedLabels":["Turkey"]},{"internal_id":"169","labels":["Manfred Schroeder","Manfred"],"normalizedLabels":["Manfred Schroeder"]},{"internal_id":"170","labels":["Bell's Acoustics, Speech and Mechanics Research Laboratory"],"normalizedLabels":["Bell Labs Acoustics, Speech and Mechanics Research Laboratory"]},{"internal_id":"171","labels":["Tony Trozzolo","Tony"],"normalizedLabels":["Tony Trozzolo"]},{"internal_id":"172","labels":["Chicago"],"normalizedLabels":["Chicago"]},{"internal_id":"173","labels":["October 7th"],"normalizedLabels":["October 7"]},{"internal_id":"174","labels":["Martin Wazowicz","Marty"],"normalizedLabels":["Martin Wazowicz"]},{"internal_id":"175","labels":["Pennsylvania"],"normalizedLabels":["Pennsylvania"]},{"internal_id":"176","labels":["Robert Whitman"],"normalizedLabels":["Robert Whitman"]},{"internal_id":"177","labels":["Martinique Theater"],"normalizedLabels":["Martinique Theater"]},{"internal_id":"178","labels":["Circle in the Square"],"normalizedLabels":["Circle in the Square"]},{"internal_id":"179","labels":["Manhattan Project"],"normalizedLabels":["Manhattan Project"]},{"internal_id":"180","labels":["Bell Labs' Polymer Research and Development Department"],"normalizedLabels":["Bell Labs Polymer Research and Development Department"]},{"internal_id":"181","labels":["Witt Wittnebert","Witt"],"normalizedLabels":["Witt Wittnebert"]},{"internal_id":"182","labels":["Rahway"],"normalizedLabels":["Rahway"]},{"internal_id":"183","labels":["Billy Kluver"],"normalizedLabels":["Billy Kluver"]},{"internal_id":"184","labels":["Dick Wolff","Dick"],"normalizedLabels":["Dick Wolff"]}]}
+
+      this.statusLabelNormalize = false;
+
+      for (let eId in this.entities){
+        let entity = this.entities[eId];
+
+        let lookForId = entity.internal_id;
+        let found = response.response.find(item => item.internal_id === lookForId);
+        if (found) {
+          if (found.normalizedLabels && found.normalizedLabels.length > 0) {
+            if (found.normalizedLabels[0] && found.labels.indexOf(found.normalizedLabels[0]) == -1){
+              console.log("Adding normalized label", found.normalizedLabels[0], "to entity", entity.internal_id, "replacing", found.labels[0]);
+              entity.normalizedLabel = found.normalizedLabels[0]
+              entity.useLabel = entity.normalizedLabel
+            }
+          }
+
+        }
+      }
+
+
+
+          
+      console.log("LLM Response", response)
+      return response
+
+    },
+
     async getSemlabProjects() {
       // Fetch the list of SemLab projects
       let sparql = `
@@ -1270,7 +1354,8 @@ export default {
 
     async buildEntityComparePrompt(entity,useSemlab){
 
-      let prompt = `Is the ${entity.type}: "${unescapeHtmlEntities(entity.entity)}" described in this text:\n`
+      let useLabel = entity.useLabel ? entity.useLabel : entity.entity;
+      let prompt = `Is the ${entity.type}: "${unescapeHtmlEntities(useLabel)}" described in this text:\n`
       prompt += `"${this.blocks[entity.blocks[0]].clean}"\n\n`
 
 
@@ -1438,6 +1523,15 @@ export default {
             <div class="a-diff">
               <h3 class="title is-4">All Entities Actions</h3>
               <div>
+
+
+
+
+
+                <button class="button" v-if="!statusLabelNormalize" @click="normalizeLabels()">Normalize Search Labels</button>
+                <font-awesome-icon class="spin" v-else  style="font-size: 2em;" :icon="['fas', 'hourglass-half']" />
+
+                <hr class="actions-hr">
                 <span>Bulk Reconcile by Project:</span>
                 <select v-model="useProjectBulkAlign">
                 <option value="" disabled selected>Select a project</option>
@@ -1533,7 +1627,14 @@ export default {
               </tr>
               <template v-for="entity in entitiesByType[index]">
                 <tr>
-                  <td>{{ entity.entity }}</td>
+                  <td v-if="entity.normalizedLabel">
+
+                      <div><input type="radio" @change="entity.useLabel = entity.entity" :value="entity.entity" class="use-label-radio" :id="'label-select-'+entity.internal_id+'-entity'" :name="'label-select-'+entity.internal_id"  :checked="(entity.entity == entity.useLabel)" /><label :for="'label-select-'+entity.internal_id+'-entity'" >{{ entity.entity }}</label></div>
+                      <div><input type="radio" @change="entity.useLabel = entity.normalizedLabel" :value="entity.normalizedLabel" class="use-label-radio" :id="'label-select-'+entity.internal_id+'-normalized'" :name="'label-select-'+entity.internal_id"  :checked="(entity.normalizedLabel == entity.useLabel)" /><label :for="'label-select-'+entity.internal_id+'-normalized'" >{{ entity.normalizedLabel }}</label></div>
+
+
+                  </td>
+                  <td v-else>{{ entity.entity }}</td>
                   <td v-if="!entity.qid">
 
 
@@ -1854,6 +1955,12 @@ textarea {
   opacity: 1;
 
 }
+.use-label-radio{
+  margin-right: 0.25em;
+}
+label{
+  cursor: pointer;
+}
 
 @keyframes fadeinout {
   0% {
@@ -1869,6 +1976,19 @@ textarea {
   .a-diff, textarea {
     background-color: #2c2c2c; /* Darker background for dark mode */
     color: #f5f5f5; /* Lighter text for dark mode */
+  }
+
+  .entity-table-class-header{
+    background-color: #41404f;
+    font-weight: bold;
+    text-transform: uppercase;
+
+  }
+  .etype-list{
+    background-color: #41404f;
+  }
+  .etype-list a, .lite-text{
+    color: #f5f5f5 !important;
   }
 }
 

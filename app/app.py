@@ -12,7 +12,7 @@ from datetime import datetime
 
 from lib.doc_diff import build_doc_diffs
 from lib.doc_llm_util import judge_diff
-from lib.doc_llm_util import ask_llm_reconcile_project_wide, ask_llm_structured, ask_llm_reconcile_build_search_order, ask_llm_compare_wikidata_entity
+from lib.doc_llm_util import ask_llm_reconcile_project_wide, ask_llm_structured, ask_llm_reconcile_build_search_order, ask_llm_compare_wikidata_entity, ask_llm_normalize_labels
 
 from lib.doc_util import return_ner
 
@@ -368,6 +368,13 @@ def handle_ask_llm(data):
         else:
             return {'success': True, 'response': response}
 
+
+
+
+@socketio.on('ask_llm_normalize_labels')
+def handle_ask_llm_normalize_labels(prompt):
+    response = ask_llm_normalize_labels(prompt)
+    return response
 
 @socketio.on('ask_llm_reconcile_build_search_order')
 def handle_ask_llm_reconcile_build_search_order(prompt):
