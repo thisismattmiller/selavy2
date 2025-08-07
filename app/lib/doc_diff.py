@@ -121,9 +121,25 @@ def build_doc_diffs(text_orginal, text_processed):
 				processed_example_sentence = text_processed_normalized_split[processed_text_example_start_index:processed_text_example_end_index]
 				processed_example_sentence_bad_index = process_text_index - processed_text_example_start_index
 
-				processed_example_sentence[processed_example_sentence_bad_index] = "*"+processed_example_sentence[processed_example_sentence_bad_index]+"*"
+				try:
+					processed_example_sentence[processed_example_sentence_bad_index] = "*"+processed_example_sentence[processed_example_sentence_bad_index]+"*"
 
-				
+				except IndexError:
+					print("IndexError: processed_example_sentence_bad_index is out of range for processed_example_sentence",flush=True	)
+					print("diffs",diffs,flush=True)
+
+
+					diffs.append({
+						"id": c,
+						"orginal_text": "-------------ERROR ERROR ERROR------------------",
+						"processed_text": " While processing the text a unrecoverable error occured, Your document may not have been fully processed and output correctly by the LLM. Take a look at the text bleow, espically the end of the doc to see if it is all there",
+						"orginal_text_array": [],
+						"processed_text_array": []
+					})
+
+					break
+					
+
 				diffs.append({
 					"id": c,
 					"orginal_text": " ".join(orginal_example_sentence),

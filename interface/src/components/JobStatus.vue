@@ -11,6 +11,8 @@
             <p style="line-break: anywhere;" v-if="job.status=='LLM_MARKING_UP' || job.status == 'PRE_LLM_MARKUP' || job.status.indexOf('ERROR') > -1"> Percent:   {{ job.status_percent   }}</p>
             <p>Created At: {{ job.created_at }}</p>
           </div>
+
+
           <div class="column">
             Workflow Status:
             <template v-if="job.workflow">
@@ -51,6 +53,14 @@
     <!-- <footer class="card-footer" v-if="job.status != 'LLM_MARKING_UP' && job.status != 'PRE_LLM_MARKUP'">
         <a href="#" class="card-footer-item">Work</a>                  
     </footer> -->
+
+          <div v-if="job.status=='LLM_MARKUP_ERROR'" class="column">
+            <p>THERE WAS AN ERROR WITH LLM PROCESSOR.</p>
+            <details>
+              <summary>Show Error Details</summary>
+              <pre><code>{{ job.error }}</code></pre>
+            </details>
+          </div>
 
     <footer class="card-footer" v-if="job.status == 'LLM_MARKUP_COMPLETE'">
       

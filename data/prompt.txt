@@ -1,0 +1,923 @@
+
+	You are a helpful assistant who is aligning entity types from two different systems.
+	This is a list of entity types from the first system:
+	['Person', 'Work (concept)', 'Event (concept)', 'Venue', 'Technology', 'Project', 'Event', 'Institution', 'Department', 'City', 'State', 'Field of work', 'Performance', 'Activity']
+	The next text is a JSON object with a list of entity types from the second system.
+	compare the two lists (the list above and the value in each "label" key in the JSON object) 
+	try to match the system 1 type to the best system two type. If you find a good match the system 2 type to the "matching_doc_types" key array.
+	Return the modified JSON object with the "matching_doc_types" key array filled in.
+	Here is the JSON object:
+	{
+  "Q1": {
+    "label": "person",
+    "qid": "Q1",
+    "matching_doc_types": []
+  },
+  "Q1804": {
+    "label": "institution",
+    "qid": "Q1804",
+    "matching_doc_types": []
+  },
+  "Q1960": {
+    "label": "interview transcript",
+    "qid": "Q1960",
+    "matching_doc_types": []
+  },
+  "Q2013": {
+    "label": "block",
+    "qid": "Q2013",
+    "matching_doc_types": []
+  },
+  "Q18805": {
+    "label": "music group",
+    "qid": "Q18805",
+    "matching_doc_types": []
+  },
+  "Q18806": {
+    "label": "Linking Lost Jazz \"Shrine\"",
+    "qid": "Q18806",
+    "matching_doc_types": []
+  },
+  "Q18809": {
+    "label": "borough",
+    "qid": "Q18809",
+    "matching_doc_types": []
+  },
+  "Q19047": {
+    "label": "group",
+    "qid": "Q19047",
+    "matching_doc_types": []
+  },
+  "Q19048": {
+    "label": "agent",
+    "qid": "Q19048",
+    "matching_doc_types": []
+  },
+  "Q19049": {
+    "label": "organization",
+    "qid": "Q19049",
+    "matching_doc_types": []
+  },
+  "Q19051": {
+    "label": "record label",
+    "qid": "Q19051",
+    "matching_doc_types": []
+  },
+  "Q19053": {
+    "label": "place",
+    "qid": "Q19053",
+    "matching_doc_types": []
+  },
+  "Q19054": {
+    "label": "thing",
+    "qid": "Q19054",
+    "matching_doc_types": []
+  },
+  "Q19056": {
+    "label": "country",
+    "qid": "Q19056",
+    "matching_doc_types": []
+  },
+  "Q19057": {
+    "label": "state",
+    "qid": "Q19057",
+    "matching_doc_types": []
+  },
+  "Q19058": {
+    "label": "city",
+    "qid": "Q19058",
+    "matching_doc_types": []
+  },
+  "Q19059": {
+    "label": "neighborhood",
+    "qid": "Q19059",
+    "matching_doc_types": []
+  },
+  "Q19060": {
+    "label": "item",
+    "qid": "Q19060",
+    "matching_doc_types": []
+  },
+  "Q19063": {
+    "label": "class",
+    "qid": "Q19063",
+    "matching_doc_types": []
+  },
+  "Q19064": {
+    "label": "Semantic Lab project",
+    "qid": "Q19064",
+    "matching_doc_types": []
+  },
+  "Q19069": {
+    "label": "document",
+    "qid": "Q19069",
+    "matching_doc_types": []
+  },
+  "Q19070": {
+    "label": "occupation",
+    "qid": "Q19070",
+    "matching_doc_types": []
+  },
+  "Q19071": {
+    "label": "event",
+    "qid": "Q19071",
+    "matching_doc_types": []
+  },
+  "Q19072": {
+    "label": "venue",
+    "qid": "Q19072",
+    "matching_doc_types": []
+  },
+  "Q19073": {
+    "label": "artwork (concept)",
+    "qid": "Q19073",
+    "matching_doc_types": []
+  },
+  "Q19074": {
+    "label": "performance",
+    "qid": "Q19074",
+    "matching_doc_types": []
+  },
+  "Q19075": {
+    "label": "archival object",
+    "qid": "Q19075",
+    "matching_doc_types": []
+  },
+  "Q19076": {
+    "label": "technology",
+    "qid": "Q19076",
+    "matching_doc_types": []
+  },
+  "Q19077": {
+    "label": "activity",
+    "qid": "Q19077",
+    "matching_doc_types": []
+  },
+  "Q19079": {
+    "label": "publication",
+    "qid": "Q19079",
+    "matching_doc_types": []
+  },
+  "Q19084": {
+    "label": "collaboration",
+    "qid": "Q19084",
+    "matching_doc_types": []
+  },
+  "Q19085": {
+    "label": "business",
+    "qid": "Q19085",
+    "matching_doc_types": []
+  },
+  "Q19086": {
+    "label": "guest list",
+    "qid": "Q19086",
+    "matching_doc_types": []
+  },
+  "Q19089": {
+    "label": "press release",
+    "qid": "Q19089",
+    "matching_doc_types": []
+  },
+  "Q19090": {
+    "label": "memorandum",
+    "qid": "Q19090",
+    "matching_doc_types": []
+  },
+  "Q19091": {
+    "label": "letter",
+    "qid": "Q19091",
+    "matching_doc_types": []
+  },
+  "Q19093": {
+    "label": "address list",
+    "qid": "Q19093",
+    "matching_doc_types": []
+  },
+  "Q19094": {
+    "label": "newspaper clipping",
+    "qid": "Q19094",
+    "matching_doc_types": []
+  },
+  "Q19095": {
+    "label": "newsletter",
+    "qid": "Q19095",
+    "matching_doc_types": []
+  },
+  "Q19096": {
+    "label": "booklet",
+    "qid": "Q19096",
+    "matching_doc_types": []
+  },
+  "Q19097": {
+    "label": "family",
+    "qid": "Q19097",
+    "matching_doc_types": []
+  },
+  "Q19098": {
+    "label": "cinematic work (concept)",
+    "qid": "Q19098",
+    "matching_doc_types": []
+  },
+  "Q19103": {
+    "label": "museum",
+    "qid": "Q19103",
+    "matching_doc_types": []
+  },
+  "Q20618": {
+    "label": "school",
+    "qid": "Q20618",
+    "matching_doc_types": []
+  },
+  "Q20619": {
+    "label": "musical instrument",
+    "qid": "Q20619",
+    "matching_doc_types": []
+  },
+  "Q20635": {
+    "label": "scholarly article",
+    "qid": "Q20635",
+    "matching_doc_types": []
+  },
+  "Q20636": {
+    "label": "scholarly publication",
+    "qid": "Q20636",
+    "matching_doc_types": []
+  },
+  "Q20637": {
+    "label": "academic journal",
+    "qid": "Q20637",
+    "matching_doc_types": []
+  },
+  "Q20638": {
+    "label": "article",
+    "qid": "Q20638",
+    "matching_doc_types": []
+  },
+  "Q20639": {
+    "label": "book",
+    "qid": "Q20639",
+    "matching_doc_types": []
+  },
+  "Q20648": {
+    "label": "kinship",
+    "qid": "Q20648",
+    "matching_doc_types": []
+  },
+  "Q20656": {
+    "label": "kinship nature",
+    "qid": "Q20656",
+    "matching_doc_types": []
+  },
+  "Q20664": {
+    "label": "property",
+    "qid": "Q20664",
+    "matching_doc_types": []
+  },
+  "Q21151": {
+    "label": "demographica",
+    "qid": "Q21151",
+    "matching_doc_types": []
+  },
+  "Q21162": {
+    "label": "historic demographica",
+    "qid": "Q21162",
+    "matching_doc_types": []
+  },
+  "Q21588": {
+    "label": "artist book",
+    "qid": "Q21588",
+    "matching_doc_types": []
+  },
+  "Q21589": {
+    "label": "catalogue",
+    "qid": "Q21589",
+    "matching_doc_types": []
+  },
+  "Q21676": {
+    "label": "publisher",
+    "qid": "Q21676",
+    "matching_doc_types": []
+  },
+  "Q22287": {
+    "label": "reason for uncertainty",
+    "qid": "Q22287",
+    "matching_doc_types": []
+  },
+  "Q22290": {
+    "label": "draft",
+    "qid": "Q22290",
+    "matching_doc_types": []
+  },
+  "Q22301": {
+    "label": "postcard",
+    "qid": "Q22301",
+    "matching_doc_types": []
+  },
+  "Q22310": {
+    "label": "photograph",
+    "qid": "Q22310",
+    "matching_doc_types": []
+  },
+  "Q22335": {
+    "label": "schedule",
+    "qid": "Q22335",
+    "matching_doc_types": []
+  },
+  "Q22365": {
+    "label": "artist statement",
+    "qid": "Q22365",
+    "matching_doc_types": []
+  },
+  "Q22373": {
+    "label": "collection",
+    "qid": "Q22373",
+    "matching_doc_types": []
+  },
+  "Q22395": {
+    "label": "art exhibition",
+    "qid": "Q22395",
+    "matching_doc_types": []
+  },
+  "Q22413": {
+    "label": "annotation",
+    "qid": "Q22413",
+    "matching_doc_types": []
+  },
+  "Q22436": {
+    "label": "sound installation artwork (concept)",
+    "qid": "Q22436",
+    "matching_doc_types": []
+  },
+  "Q22531": {
+    "label": "qualifier property",
+    "qid": "Q22531",
+    "matching_doc_types": []
+  },
+  "Q22646": {
+    "label": "organizational chart",
+    "qid": "Q22646",
+    "matching_doc_types": []
+  },
+  "Q22647": {
+    "label": "floor plan",
+    "qid": "Q22647",
+    "matching_doc_types": []
+  },
+  "Q22648": {
+    "label": "form",
+    "qid": "Q22648",
+    "matching_doc_types": []
+  },
+  "Q22649": {
+    "label": "list",
+    "qid": "Q22649",
+    "matching_doc_types": []
+  },
+  "Q22650": {
+    "label": "manuscript",
+    "qid": "Q22650",
+    "matching_doc_types": []
+  },
+  "Q22651": {
+    "label": "pamphlet",
+    "qid": "Q22651",
+    "matching_doc_types": []
+  },
+  "Q22652": {
+    "label": "programme",
+    "qid": "Q22652",
+    "matching_doc_types": []
+  },
+  "Q22653": {
+    "label": "questionnaire",
+    "qid": "Q22653",
+    "matching_doc_types": []
+  },
+  "Q22654": {
+    "label": "receipt",
+    "qid": "Q22654",
+    "matching_doc_types": []
+  },
+  "Q22655": {
+    "label": "telegram",
+    "qid": "Q22655",
+    "matching_doc_types": []
+  },
+  "Q22656": {
+    "label": "moving image",
+    "qid": "Q22656",
+    "matching_doc_types": []
+  },
+  "Q22977": {
+    "label": "concert",
+    "qid": "Q22977",
+    "matching_doc_types": []
+  },
+  "Q22989": {
+    "label": "price descriptor",
+    "qid": "Q22989",
+    "matching_doc_types": []
+  },
+  "Q23058": {
+    "label": "band battle",
+    "qid": "Q23058",
+    "matching_doc_types": []
+  },
+  "Q23077": {
+    "label": "park",
+    "qid": "Q23077",
+    "matching_doc_types": []
+  },
+  "Q23078": {
+    "label": "warehouse",
+    "qid": "Q23078",
+    "matching_doc_types": []
+  },
+  "Q23122": {
+    "label": "casino",
+    "qid": "Q23122",
+    "matching_doc_types": []
+  },
+  "Q23179": {
+    "label": "genre",
+    "qid": "Q23179",
+    "matching_doc_types": []
+  },
+  "Q23195": {
+    "label": "nonprofit organization",
+    "qid": "Q23195",
+    "matching_doc_types": []
+  },
+  "Q23219": {
+    "label": "participatory theatre",
+    "qid": "Q23219",
+    "matching_doc_types": []
+  },
+  "Q23229": {
+    "label": "art material",
+    "qid": "Q23229",
+    "matching_doc_types": []
+  },
+  "Q23235": {
+    "label": "civic center",
+    "qid": "Q23235",
+    "matching_doc_types": []
+  },
+  "Q23257": {
+    "label": "USO center",
+    "qid": "Q23257",
+    "matching_doc_types": []
+  },
+  "Q23261": {
+    "label": "dance group",
+    "qid": "Q23261",
+    "matching_doc_types": []
+  },
+  "Q23292": {
+    "label": "sports stadium",
+    "qid": "Q23292",
+    "matching_doc_types": []
+  },
+  "Q23422": {
+    "label": "radio station",
+    "qid": "Q23422",
+    "matching_doc_types": []
+  },
+  "Q23497": {
+    "label": "hotel",
+    "qid": "Q23497",
+    "matching_doc_types": []
+  },
+  "Q23505": {
+    "label": "artist's studio",
+    "qid": "Q23505",
+    "matching_doc_types": []
+  },
+  "Q23535": {
+    "label": "continent",
+    "qid": "Q23535",
+    "matching_doc_types": []
+  },
+  "Q23571": {
+    "label": "inverse property",
+    "qid": "Q23571",
+    "matching_doc_types": []
+  },
+  "Q23572": {
+    "label": "symmetric property",
+    "qid": "Q23572",
+    "matching_doc_types": []
+  },
+  "Q23736": {
+    "label": "unrealized project",
+    "qid": "Q23736",
+    "matching_doc_types": []
+  },
+  "Q23886": {
+    "label": "benefit",
+    "qid": "Q23886",
+    "matching_doc_types": []
+  },
+  "Q24345": {
+    "label": "brand",
+    "qid": "Q24345",
+    "matching_doc_types": []
+  },
+  "Q24451": {
+    "label": "color",
+    "qid": "Q24451",
+    "matching_doc_types": []
+  },
+  "Q24473": {
+    "label": "gelatin silver print",
+    "qid": "Q24473",
+    "matching_doc_types": []
+  },
+  "Q24474": {
+    "label": "slide",
+    "qid": "Q24474",
+    "matching_doc_types": []
+  },
+  "Q24475": {
+    "label": "polaroid",
+    "qid": "Q24475",
+    "matching_doc_types": []
+  },
+  "Q24548": {
+    "label": "sound",
+    "qid": "Q24548",
+    "matching_doc_types": []
+  },
+  "Q24556": {
+    "label": "sculpture",
+    "qid": "Q24556",
+    "matching_doc_types": []
+  },
+  "Q24626": {
+    "label": "ethnic group",
+    "qid": "Q24626",
+    "matching_doc_types": []
+  },
+  "Q24678": {
+    "label": "drawing",
+    "qid": "Q24678",
+    "matching_doc_types": []
+  },
+  "Q25656": {
+    "label": "workshop",
+    "qid": "Q25656",
+    "matching_doc_types": []
+  },
+  "Q25657": {
+    "label": "celebration",
+    "qid": "Q25657",
+    "matching_doc_types": []
+  },
+  "Q25658": {
+    "label": "film screening",
+    "qid": "Q25658",
+    "matching_doc_types": []
+  },
+  "Q25659": {
+    "label": "panel discussion",
+    "qid": "Q25659",
+    "matching_doc_types": []
+  },
+  "Q25660": {
+    "label": "auction",
+    "qid": "Q25660",
+    "matching_doc_types": []
+  },
+  "Q25661": {
+    "label": "presentation",
+    "qid": "Q25661",
+    "matching_doc_types": []
+  },
+  "Q25662": {
+    "label": "street performance",
+    "qid": "Q25662",
+    "matching_doc_types": []
+  },
+  "Q25663": {
+    "label": "walking tour",
+    "qid": "Q25663",
+    "matching_doc_types": []
+  },
+  "Q25667": {
+    "label": "monastery",
+    "qid": "Q25667",
+    "matching_doc_types": []
+  },
+  "Q25669": {
+    "label": "artist collective",
+    "qid": "Q25669",
+    "matching_doc_types": []
+  },
+  "Q25838": {
+    "label": "project",
+    "qid": "Q25838",
+    "matching_doc_types": []
+  },
+  "Q25969": {
+    "label": "education event",
+    "qid": "Q25969",
+    "matching_doc_types": []
+  },
+  "Q25970": {
+    "label": "exhibition event",
+    "qid": "Q25970",
+    "matching_doc_types": []
+  },
+  "Q25971": {
+    "label": "performance event",
+    "qid": "Q25971",
+    "matching_doc_types": []
+  },
+  "Q25972": {
+    "label": "fundraising event",
+    "qid": "Q25972",
+    "matching_doc_types": []
+  },
+  "Q25973": {
+    "label": "screening event",
+    "qid": "Q25973",
+    "matching_doc_types": []
+  },
+  "Q25974": {
+    "label": "social event",
+    "qid": "Q25974",
+    "matching_doc_types": []
+  },
+  "Q26025": {
+    "label": "restaurant",
+    "qid": "Q26025",
+    "matching_doc_types": []
+  },
+  "Q26150": {
+    "label": "work",
+    "qid": "Q26150",
+    "matching_doc_types": []
+  },
+  "Q26289": {
+    "label": "painting",
+    "qid": "Q26289",
+    "matching_doc_types": []
+  },
+  "Q26763": {
+    "label": "film (material)",
+    "qid": "Q26763",
+    "matching_doc_types": []
+  },
+  "Q26764": {
+    "label": "sculpture (material)",
+    "qid": "Q26764",
+    "matching_doc_types": []
+  },
+  "Q26765": {
+    "label": "photograph (material)",
+    "qid": "Q26765",
+    "matching_doc_types": []
+  },
+  "Q27024": {
+    "label": "video recordings (material)",
+    "qid": "Q27024",
+    "matching_doc_types": []
+  },
+  "Q27036": {
+    "label": "relationship generation type",
+    "qid": "Q27036",
+    "matching_doc_types": []
+  },
+  "Q27056": {
+    "label": "local union",
+    "qid": "Q27056",
+    "matching_doc_types": []
+  },
+  "Q27062": {
+    "label": "instructions",
+    "qid": "Q27062",
+    "matching_doc_types": []
+  },
+  "Q27063": {
+    "label": "notes",
+    "qid": "Q27063",
+    "matching_doc_types": []
+  },
+  "Q27168": {
+    "label": "object",
+    "qid": "Q27168",
+    "matching_doc_types": []
+  },
+  "Q27170": {
+    "label": "choreographic work (concept)",
+    "qid": "Q27170",
+    "matching_doc_types": []
+  },
+  "Q27171": {
+    "label": "dance performance",
+    "qid": "Q27171",
+    "matching_doc_types": []
+  },
+  "Q27172": {
+    "label": "comedy performance",
+    "qid": "Q27172",
+    "matching_doc_types": []
+  },
+  "Q27173": {
+    "label": "canal",
+    "qid": "Q27173",
+    "matching_doc_types": []
+  },
+  "Q27174": {
+    "label": "island",
+    "qid": "Q27174",
+    "matching_doc_types": []
+  },
+  "Q27175": {
+    "label": "air base",
+    "qid": "Q27175",
+    "matching_doc_types": []
+  },
+  "Q27354": {
+    "label": "diary entry",
+    "qid": "Q27354",
+    "matching_doc_types": []
+  },
+  "Q27377": {
+    "label": "field of work (class)",
+    "qid": "Q27377",
+    "matching_doc_types": []
+  },
+  "Q27420": {
+    "label": "audio-visual recording",
+    "qid": "Q27420",
+    "matching_doc_types": []
+  },
+  "Q27447": {
+    "label": "diary",
+    "qid": "Q27447",
+    "matching_doc_types": []
+  },
+  "Q27513": {
+    "label": "bibliographic reference",
+    "qid": "Q27513",
+    "matching_doc_types": []
+  },
+  "Q27514": {
+    "label": "bibliography",
+    "qid": "Q27514",
+    "matching_doc_types": []
+  },
+  "Q27516": {
+    "label": "ship",
+    "qid": "Q27516",
+    "matching_doc_types": []
+  },
+  "Q28504": {
+    "label": "series",
+    "qid": "Q28504",
+    "matching_doc_types": []
+  },
+  "Q28510": {
+    "label": "press packet",
+    "qid": "Q28510",
+    "matching_doc_types": []
+  },
+  "Q28613": {
+    "label": "edge-notched card",
+    "qid": "Q28613",
+    "matching_doc_types": []
+  },
+  "Q28932": {
+    "label": "artwork (object)",
+    "qid": "Q28932",
+    "matching_doc_types": []
+  },
+  "Q28933": {
+    "label": "installation artwork (concept)",
+    "qid": "Q28933",
+    "matching_doc_types": []
+  },
+  "Q28934": {
+    "label": "music performance",
+    "qid": "Q28934",
+    "matching_doc_types": []
+  },
+  "Q28938": {
+    "label": "performance artwork (concept)",
+    "qid": "Q28938",
+    "matching_doc_types": []
+  },
+  "Q28939": {
+    "label": "dramatic work (concept)",
+    "qid": "Q28939",
+    "matching_doc_types": []
+  },
+  "Q28940": {
+    "label": "musical work (concept)",
+    "qid": "Q28940",
+    "matching_doc_types": []
+  },
+  "Q28941": {
+    "label": "literary work (concept)",
+    "qid": "Q28941",
+    "matching_doc_types": []
+  },
+  "Q28943": {
+    "label": "print",
+    "qid": "Q28943",
+    "matching_doc_types": []
+  },
+  "Q28945": {
+    "label": "poster",
+    "qid": "Q28945",
+    "matching_doc_types": []
+  },
+  "Q28947": {
+    "label": "combine painting",
+    "qid": "Q28947",
+    "matching_doc_types": []
+  },
+  "Q28948": {
+    "label": "correspondence",
+    "qid": "Q28948",
+    "matching_doc_types": []
+  },
+  "Q28949": {
+    "label": "periodical",
+    "qid": "Q28949",
+    "matching_doc_types": []
+  },
+  "Q28950": {
+    "label": "newspaper",
+    "qid": "Q28950",
+    "matching_doc_types": []
+  },
+  "Q28951": {
+    "label": "clipping",
+    "qid": "Q28951",
+    "matching_doc_types": []
+  },
+  "Q28952": {
+    "label": "notebook",
+    "qid": "Q28952",
+    "matching_doc_types": []
+  },
+  "Q28953": {
+    "label": "typescript",
+    "qid": "Q28953",
+    "matching_doc_types": []
+  },
+  "Q28954": {
+    "label": "envelope",
+    "qid": "Q28954",
+    "matching_doc_types": []
+  },
+  "Q28955": {
+    "label": "sound recording",
+    "qid": "Q28955",
+    "matching_doc_types": []
+  },
+  "Q28957": {
+    "label": "artwork (structural class)",
+    "qid": "Q28957",
+    "matching_doc_types": []
+  },
+  "Q28958": {
+    "label": "letter to the editor",
+    "qid": "Q28958",
+    "matching_doc_types": []
+  },
+  "Q28960": {
+    "label": "review",
+    "qid": "Q28960",
+    "matching_doc_types": []
+  },
+  "Q28961": {
+    "label": "role",
+    "qid": "Q28961",
+    "matching_doc_types": []
+  },
+  "Q28963": {
+    "label": "character",
+    "qid": "Q28963",
+    "matching_doc_types": []
+  },
+  "Q28964": {
+    "label": "steamship",
+    "qid": "Q28964",
+    "matching_doc_types": []
+  },
+  "Q28975": {
+    "label": "dissertation",
+    "qid": "Q28975",
+    "matching_doc_types": []
+  },
+  "Q28977": {
+    "label": "language",
+    "qid": "Q28977",
+    "matching_doc_types": []
+  }
+}
+
+	

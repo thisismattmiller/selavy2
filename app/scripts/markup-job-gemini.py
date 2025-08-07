@@ -22,6 +22,8 @@ markup_text = job_data['text']
 model = "gemini-2.5-pro-preview-03-25"
 model = "gemini-2.5-flash-preview-05-20"
 model = "gemini-2.5-flash"
+model= "gemini-2.5-pro"
+
 
 
 rough_word_count_orginal = len(markup_text.split(' '))
@@ -129,9 +131,9 @@ You also add lines to the text to seperate the document into sections. Insert th
 print(system_instruction,flush=True)
 generate_content_config = types.GenerateContentConfig(
     temperature=0,
-    # thinking_config = types.ThinkingConfig(
-    #     thinking_budget=0,
-    # ),
+    thinking_config = types.ThinkingConfig(
+        thinking_budget=32768,
+    ),
     response_mime_type="text/plain",
     system_instruction=[
         types.Part.from_text(text=system_instruction),

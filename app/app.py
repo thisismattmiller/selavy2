@@ -141,7 +141,11 @@ def handle_login_validate(login_token):
 def handle_get_document_status(job_data):
     # check if the job exists
     if 'user' in job_data:
-        job_data["user"] = job_data["user"].lower()
+        if job_data["user"] is not None:
+            job_data["user"] = job_data["user"].lower()
+        else:
+            job_data["user"] = "none"
+
     
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json') as f:
@@ -164,6 +168,19 @@ def handle_get_document_status(job_data):
             if 'status' in job_data:
                 if isinstance(job_data['status'], list):
                     job_data['status'] = job_data['status'][0]
+
+            if job_data['status'] == 'LLM_MARKING_UP' or job_data['status'] == 'PRE_LLM_MARKUP':
+                # check if there is an error file with stuff in it
+                if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["id"]}_error.log'):
+                    with open(f'/data/jobs/{job_data["user"]}/{job_data["id"]}_error.log') as ef:
+                        error_data = ef.read()
+                        # print("Error file found:", error_data, len(), flush=True)
+                        if len(error_data.split("\n")) > 1:
+                            job_data['error'] = error_data
+                            job_data['status'] = "LLM_MARKUP_ERROR"
+
+
+
             return {'success': True, 'error': None, 'job_data': job_data }
     else:
         return {'success': False, 'error': 'Doc not found'}
@@ -330,6 +347,17 @@ def handle_jobs_list(data):
 
             if job_data['status'] == 'PRE_LLM_MARKUP' or job_data['status'] == 'LLM_MARKING_UP':
                 job_data['order'] = 0
+                
+
+                # check if there is an error file with stuff in it
+                if os.path.exists(f'{user_jobs_dir}{job_data["id"]}_error.log'):
+                    with open(f'{user_jobs_dir}{job_data["id"]}_error.log') as ef:
+                        error_data = ef.read()
+                        # print("Error file found:", error_data, len(), flush=True)
+                        if len(error_data.split("\n")) > 1:
+                            job_data['error'] = error_data
+                            job_data['status'] = "LLM_MARKUP_ERROR"
+
             else:
                 job_data['order'] = 1
 
