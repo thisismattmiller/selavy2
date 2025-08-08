@@ -1,7 +1,10 @@
 <template>
   
-  <div class="card">
+  <div v-if="isVisible" class="card" :class="{ 'deleting': isDeleting }">
     <div class="card-content">
+      <button class="delete-button" @click="deleteJob" title="Delete Job">
+        <font-awesome-icon :icon="['fas', 'trash']" />
+      </button>
       <div class="content">
         <div class="columns">
           <div class="column">
@@ -72,8 +75,6 @@
 
     </footer>
 
-    
-
   </div>
 
 </template>
@@ -106,7 +107,9 @@ export default {
         status: "Loading...",
         status_percent: 0,
         created_at: "Loading..."
-      }
+      },
+      isVisible: true,
+      isDeleting: false
       
     }
   },
@@ -145,7 +148,20 @@ export default {
       });
     },
 
-
+    deleteJob() {
+      const confirmed = confirm(`Are you sure you want to delete the job "${this.job.title}"? This action cannot be undone.`);
+      
+      if (!confirmed) {
+        return;
+      }
+      
+      this.isDeleting = true;
+      setTimeout(() => {
+        this.isVisible = false;
+        this.$emit('delete', this.job.id);
+        socket.emit('delete_job', this.job.id);
+      }, 400); // Wait for animation to complete
+    }
     
   },
   mounted() {
@@ -161,6 +177,54 @@ export default {
 </script>
 
 <style scoped>
+.card {
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.card.deleting {
+  animation: deleteFlash 0.4s ease-out;
+}
+
+@keyframes deleteFlash {
+  0% {
+    background-color: inherit;
+    opacity: 1;
+    transform: scale(1);
+  }
+  20% {
+    background-color: #ff4444;
+    transform: scale(1.02);
+  }
+  40% {
+    background-color: #ff6666;
+    transform: scale(1);
+  }
+  100% {
+    background-color: #ff8888;
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+.delete-button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: #dc3545;
+  cursor: pointer;
+  padding: 5px;
+  font-size: 1rem;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+  z-index: 10;
+}
+
+.delete-button:hover {
+  opacity: 1;
+}
 
 .flashing-dot {
   width: 15px; /* Adjust size as needed */

@@ -222,8 +222,10 @@ export default {
 
           </div>
           <div class="column">
-            <div class="diff-example">{{ diff.orginal_text }}</div>
-            <div class="diff-example">{{ diff.processed_text }}</div>
+             <div class="diff-example">Change Type: {{ diff.type }}</div>
+
+            <div class="diff-example" v-html="'Original:</br>' + diff.changes_markedup.original"></div>
+            <div class="diff-example" v-html="'Processed:</br>' + diff.changes_markedup.processed"></div>
 
             <div class="judgement-text" v-if="diff.judgement && diff.judgement.reason">
               {{ diff.judgement.reason }}
@@ -257,7 +259,9 @@ export default {
   font-family: 'Courier New', Courier, monospace;
 }
 
-
+strong{
+  background-color: yellow !important;
+}
 
 
 

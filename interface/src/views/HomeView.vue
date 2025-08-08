@@ -30,6 +30,10 @@ export default {
 
       uiCounter: 0,
       
+      selectedModel: 'gemini-2.5-pro',
+      modelOptions: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-5'],
+      additionalPromptInstructions: '',
+      showAdditionalPrompt: false,
 
 
       
@@ -113,7 +117,13 @@ export default {
 
       this.apiStatus = 'processing'
       this.newJob = false;
-      socket.emit('process_text', { text: this.docText, user:this.user, title: docTitle }, (response) => {
+      socket.emit('process_text', { 
+        text: this.docText, 
+        user: this.user, 
+        title: docTitle,
+        model: this.selectedModel,
+        additionalInstructions: this.additionalPromptInstructions
+      }, (response) => {
         console.log("process_text response", response)
         console.log(response)
         this.apiStatus = null;
@@ -247,6 +257,35 @@ export default {
 
             </div>
           </div>
+          
+          <div class="field" style="margin-top: 1em; margin-bottom: 1em;">
+            <label class="label">Select Model</label>
+            <div class="control" style="display: flex; align-items: center;">
+              <div>
+                <template v-for="model in modelOptions" :key="model">
+                  <label class="radio" style="margin-right: 1.5em; display: inline-block; padding: 0.25em;">
+                    <input type="radio" :value="model" v-model="selectedModel" style="margin-right: 0.5em;">
+                    {{ model }}
+                  </label>
+                </template>
+              </div>
+              <button class="button is-small is-link is-light" @click="showAdditionalPrompt = !showAdditionalPrompt" style="margin-left: auto; font-size: 0.85rem; padding: 0.25rem 0.5rem;">
+                <span class="icon is-small">
+                  <font-awesome-icon :icon="['fas', showAdditionalPrompt ? 'chevron-up' : 'chevron-down']" />
+                </span>
+                <span>{{ showAdditionalPrompt ? 'Hide' : 'Show' }} Additional Instructions</span>
+              </button>
+            </div>
+            <div v-if="showAdditionalPrompt" style="margin-top: 0.5em;">
+              <textarea 
+                class="textarea-additional" 
+                v-model="additionalPromptInstructions"
+                placeholder="Enter any additional instructions for the model (optional)"
+                rows="3">
+              </textarea>
+            </div>
+          </div>
+          
           <textarea class="textarea" @input="docTextChanged"  placeholder="Enter the Text of the document HERE"></textarea>
         </template>
 
@@ -295,6 +334,10 @@ export default {
 }
 .textarea{
   min-height: 600px;
+}
+.textarea-additional{
+  min-height: 200px;
+  width: 100%;
 }
 
 

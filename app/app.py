@@ -9,8 +9,12 @@ import json
 from typing import Dict
 import glob
 from datetime import datetime
+import requests
 
-from lib.doc_diff import build_doc_diffs
+# from lib.doc_diff import build_doc_diffs
+from lib.doc_diff_new import build_doc_diffs
+
+
 from lib.doc_llm_util import judge_diff
 from lib.doc_llm_util import ask_llm_reconcile_project_wide, ask_llm_structured, ask_llm_reconcile_build_search_order, ask_llm_compare_wikidata_entity, ask_llm_normalize_labels
 
@@ -242,6 +246,7 @@ def handle_get_document_diffs(job_data):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json') as f:
             job_data = json.load(f)
             diffs = build_doc_diffs(job_data['text'], job_data['text_markup'])
+            print("documentDiffs", diffs, flush=True)
             return {'success': True, 'error': None, 'documentDiffs': diffs, 'documentOrginal': job_data['text'], 'documentMarkup': job_data['text_markup'] }
     else:
         return {'success': False, 'error': 'Doc not found'}
@@ -297,7 +302,9 @@ def handle_process_text(json_data):
         "user": json_data['user'],
         "created_at": formatted_date_time,
         "status": 'PRE_LLM_MARKUP',
-        'status_percent': None
+        'status_percent': None,
+        "model": json_data.get('model'),
+        "additionalInstructions": json_data.get('additionalInstructions')
     }
 
     with open(f'{user_jobs_dir}{job_id}.json','w') as out:
@@ -311,14 +318,17 @@ def handle_process_text(json_data):
             "status": 'PRE_LLM_MARKUP',
             "user": json_data['user'],  
             "created_at": formatted_date_time,
-            'status_percent': None
+            'status_percent': None,
         },out)
 
     # socketio.emit('job_status', {'id': job_id, 'status': 'PRE_LLM_MARKUP'})
     script_output = open(f'{user_jobs_dir}{job_id}_output.log', 'w')
     script_error = open(f'{user_jobs_dir}{job_id}_error.log', 'w')
 
-    process = subprocess.Popen("python3 scripts/markup-job-gemini.py " + job_id + " " + json_data['user'].lower(), shell=True, stdout=script_output, stderr=script_error)
+    if 'gpt' in json_data['model']:
+        process = subprocess.Popen("python3 scripts/markup-job-gpt.py " + job_id + " " + json_data['user'].lower(), shell=True, stdout=script_output, stderr=script_error)
+    else:
+        process = subprocess.Popen("python3 scripts/markup-job-gemini.py " + job_id + " " + json_data['user'].lower(), shell=True, stdout=script_output, stderr=script_error)
 
     print("script_output",script_output, flush=True)
     print("script_error",script_error, flush=True)    
@@ -423,6 +433,59 @@ def handle_search_base(query):
         return {'success': True, 'error': None, 'response': response}
     else:
         return {'success': False, 'error': "Base Search Error", 'response':response}
+
+@socketio.on('delete_job')
+def handle_delete_job(job_id):
+    try:
+        # Find the job metadata to get the user
+        job_found = False
+        user = None
+        
+        # Search through all user directories for the job
+        if os.path.exists('/data/jobs'):
+            for user_dir in os.listdir('/data/jobs'):
+                meta_file = f'/data/jobs/{user_dir}/{job_id}.meta.json'
+                if os.path.exists(meta_file):
+                    with open(meta_file) as f:
+                        job_data = json.load(f)
+                        user = job_data.get('user', user_dir)
+                        job_found = True
+                        break
+        
+        if not job_found:
+            return {'success': False, 'error': 'Job not found'}
+        
+        # Delete all job-related files
+        user_jobs_dir = f'/data/jobs/{user}/'
+        files_to_delete = [
+            f'{user_jobs_dir}{job_id}.json',
+            f'{user_jobs_dir}{job_id}.meta.json',
+            f'{user_jobs_dir}{job_id}_output.log',
+            f'{user_jobs_dir}{job_id}_error.log'
+        ]
+        
+        deleted_files = []
+        for file_path in files_to_delete:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                deleted_files.append(os.path.basename(file_path))
+        
+        return {'success': True, 'error': None, 'deleted_files': deleted_files}
+        
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('search_semlab_autocomplete')
+def handle_search_semlab_autocomplete(search_term):
+    try:
+        url = f"https://base.semlab.io/w/api.php?action=wbsearchentities&search={search_term}&format=json&errorformat=plaintext&language=en&uselang=en&type=item"
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        return {'success': True, 'error': None, 'data': response.json()}
+        
+    except requests.exceptions.RequestException as e:
+        return {'success': False, 'error': str(e), 'data': None}
 
 if __name__ == '__main__':
 

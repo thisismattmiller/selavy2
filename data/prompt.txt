@@ -1,7 +1,7 @@
 
 	You are a helpful assistant who is aligning entity types from two different systems.
 	This is a list of entity types from the first system:
-	['Person', 'Work (concept)', 'Event (concept)', 'Venue', 'Technology', 'Project', 'Event', 'Institution', 'Department', 'City', 'State', 'Field of work', 'Performance', 'Activity']
+	['Diary', 'Date', 'City', 'Ethnic group', 'Organization', 'Country', 'Literary work (concept)', 'Person', 'Book', 'Museum', 'Place', 'Occupation', 'Publication', 'Art movement', 'Collection', 'Artwork (object)', 'Artwork (structural class)', 'Restaurant', 'Qualifier property', 'Address', 'Language', 'Neighborhood', 'Group', 'Demographica', 'Annotation', 'Object', 'Artwork (concept)', 'Character', 'Park', 'State', 'Art exhibition', 'Hotel', 'Disease', 'Musical work (concept)', 'Concert', 'Article', 'River', 'Religious concept', 'Archival object', 'Event', 'Architectural element', 'Venue', 'Business']
 	The next text is a JSON object with a list of entity types from the second system.
 	compare the two lists (the list above and the value in each "label" key in the JSON object) 
 	try to match the system 1 type to the best system two type. If you find a good match the system 2 type to the "matching_doc_types" key array.

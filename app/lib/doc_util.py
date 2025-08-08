@@ -80,6 +80,10 @@ def extract_entities(blocks):
 				if entity not in entities[entity_id]['labels']:
 					entities[entity_id]['labels'].append(entity)
 
+			# sort entities[entity_id]['labels'] by the longest label first
+			if len(entities[entity_id]['labels']) > 1:
+				entities[entity_id]['labels'] = sorted(entities[entity_id]['labels'], key=len, reverse=True)
+				entities[entity_id]['entity'] = entities[entity_id]['labels'][0]
 
 			# entities.append((entity, entity_type))
 

@@ -19,12 +19,11 @@ job_data = json.load(open(f'/data/jobs/{user_name}/' + jobs_id + '.json'))
 markup_text = job_data['text']
 
 
-model = "gemini-2.5-pro-preview-03-25"
-model = "gemini-2.5-flash-preview-05-20"
-model = "gemini-2.5-flash"
-model= "gemini-2.5-pro"
+model = job_data.get('model', 'gemini-2.5-flash')
 
-
+budget = 24576
+if 'pro' in model:
+    budget = 32768
 
 rough_word_count_orginal = len(markup_text.split(' '))
 
@@ -132,7 +131,7 @@ print(system_instruction,flush=True)
 generate_content_config = types.GenerateContentConfig(
     temperature=0,
     thinking_config = types.ThinkingConfig(
-        thinking_budget=32768,
+        thinking_budget=budget,
     ),
     response_mime_type="text/plain",
     system_instruction=[
@@ -145,6 +144,7 @@ print(markup_text,flush=True)
 
 response_text = ""
 chunk_count = 0
+last_percent_done = 0
 print("streaming",flush=True)
 for chunk in client.models.generate_content_stream(
     model=model,
@@ -161,6 +161,7 @@ for chunk in client.models.generate_content_stream(
             rough_word_count_markup = len(response_text.split(' '))
             job_data["status"] = "LLM_MARKING_UP",
             job_data['status_percent'] = f"{rough_word_count_markup}/{rough_word_count_orginal} ({int(rough_word_count_markup/rough_word_count_orginal*100)}%)"
+            last_percent_done = int(rough_word_count_markup/rough_word_count_orginal*100)
             json.dump(job_data,open(f'/data/jobs/{user_name}/' + jobs_id + '.json','w'),indent=2)
             chunk_count=0
             print(job_data['status_percent'],flush=True)
@@ -179,6 +180,7 @@ for chunk in client.models.generate_content_stream(
 job_data["status"] = "LLM_MARKUP_COMPLETE",
 job_data['text_markup'] = response_text
 job_data['status_percent'] = "(100%)"
+job_data['last_percent_done'] = last_percent_done
 json.dump(job_data,open(f'/data/jobs/{user_name}/' + jobs_id + '.json','w'),indent=2)
 
 

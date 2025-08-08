@@ -11,7 +11,7 @@ function asyncEmit(eventName, data) {
     socket.emit(eventName, data, (response) => {
       resolve(response);
     })
-    setTimeout(reject, 1000 * 120);
+    setTimeout(reject, 1000 * 300);
   });
 }
 function unescapeHtmlEntities(escapedString) {
@@ -43,13 +43,21 @@ export default {
       semlabClasses: [],
 
       showMoreBlocks: {}, // used to track which entities have "show more blocks" expanded
+      expandedDescriptions: {}, // used to track which bad match descriptions are expanded
+      wikidataSearchQueries: {}, // track search queries for each entity
+      wikidataSearchResults: {}, // track search results for each entity
+      wikidataSearchLoading: {}, // track loading state for each entity
+      wikidataSearchTimers: {}, // debounce timers for search
+      wikidataSelectedIndex: {}, // track selected index for keyboard navigation
+      semlabSearchQueries: {}, // track search queries for SemLab
+      semlabSearchResults: {}, // track search results for SemLab
+      semlabSearchLoading: {}, // track loading state for SemLab
+      semlabSearchTimers: {}, // debounce timers for SemLab search
+      semlabSelectedIndex: {}, // track selected index for SemLab keyboard navigation
 
       useProjectBulkAlign: null, // used to track which project is selected for bulk alignment
 
-      activeEntity: { 
-        internal_id: null, // used to track which entity is active for details view
-     
-      },
+      activeEntity: null, // used to track which entity is active for details view
 
       bulkInstanceOfBase: null,
       bulkInstanceOfDoc: null, // used to track which type is selected for bulk alignment
@@ -105,7 +113,7 @@ export default {
 
      
       socket.emit('get_ner', {doc:this.documentId, user:this.user}, (response) => {
-        // console.log("get_ner response", response)
+        console.log("get_ner response", response)
         if (response.success) {
           // console.log("ner", response.ner)
 
@@ -379,7 +387,13 @@ export default {
         newSortOrder = {success: true, error:null, response: newSortOrder}
 
       }else{
-        newSortOrder = await asyncEmit('ask_llm_reconcile_build_search_order', sortOrderPrompt.prompt);
+
+        try {
+          newSortOrder = await asyncEmit('ask_llm_reconcile_build_search_order', sortOrderPrompt.prompt);
+        } catch (error) {
+          console.error("Error in ask_llm_reconcile_build_search_order:", error);
+          newSortOrder = { success: false, error: "Timeout or other error occurred" };
+        }
 
       }
 
@@ -452,6 +466,11 @@ export default {
             break
           }else{
 
+
+            if (!entity.badMatches){
+              entity.badMatches = []
+            }
+
             let badMatchType
             for (let d of compareData){
               if (d.p == 'instance of') {
@@ -459,6 +478,15 @@ export default {
                 break
               }
             }
+
+            entity.badMatches.push({
+              qid: toReconcile.qid,
+              label: toReconcile.label,
+              description: toReconcile.description,
+              reason: compareResult.response.reason,
+              confidence: compareResult.response.confidence,
+              type: badMatchType
+            });
 
             console.log("No match found for entity", entity.entity, "with qid", toReconcile.qid, badMatchType, compareResult)
 
@@ -838,9 +866,670 @@ export default {
     },
 
     details(entity) {
-      // Set the active entity for details view
-      this.activeEntity = entity;
+      // Toggle the active entity for details view
+      console.log(entity, this.activeEntity)
+      if (this.activeEntity && this.activeEntity.internal_id === entity.internal_id) {
+        this.activeEntity = null;
+      } else {
+        this.activeEntity = entity;
+      }
       // console.log("activeEntity", this.activeEntity)
+    },
+
+    selectBadMatch(entity, badMatch) {
+      // Set the entity's wikiQid to the selected bad match
+      entity.wikiQid = badMatch.qid;
+      entity.wikiLabel = badMatch.label;
+      entity.wikiDescription = badMatch.description;
+      // Clear the bad matches list since one was selected
+      delete entity.badMatches;
+      // Optionally retrieve additional data from Wikidata
+      this.retriveWikidataEntity(entity);
+    },
+
+    clearBadMatches(entity) {
+      // Clear all bad matches from the entity
+      delete entity.badMatches;
+      delete entity.wikiQid;
+      delete entity.wikiLabel;
+      delete entity.wikiDescription;
+      delete entity.wikiNoMatch;
+    },
+
+    truncateDescription(description, entityId, matchIndex) {
+      // Truncate description to 5 words if not expanded
+      const key = `${entityId}_${matchIndex}`;
+      if (!description) return '';
+      
+      const words = description.split(' ');
+      if (words.length <= 5) return description;
+      
+      if (this.expandedDescriptions[key]) {
+        return description;
+      }
+      return words.slice(0, 5).join(' ') + '...';
+    },
+
+    toggleDescription(entityId, matchIndex) {
+      // Toggle the expanded state of a description
+      const key = `${entityId}_${matchIndex}`;
+      this.expandedDescriptions[key] = !this.expandedDescriptions[key];
+    },
+
+    async searchWikidata(entityId, query) {
+      // Search Wikidata API with debounce
+      if (!query || query.length < 2) {
+        this.wikidataSearchResults[entityId] = [];
+        this.wikidataSelectedIndex[entityId] = -1;
+        return;
+      }
+
+      // Clear existing timer
+      if (this.wikidataSearchTimers[entityId]) {
+        clearTimeout(this.wikidataSearchTimers[entityId]);
+      }
+
+      // Set loading state
+      this.wikidataSearchLoading[entityId] = true;
+
+      // Debounce the search
+      this.wikidataSearchTimers[entityId] = setTimeout(async () => {
+        try {
+          const searchUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&limit=10&language=en&uselang=en&type=item&origin=*&search=${encodeURIComponent(query)}`;
+          const response = await fetch(searchUrl);
+          const data = await response.json();
+          
+          if (data.search) {
+            const searchResults = data.search.map(item => ({
+              id: item.id,
+              label: item.label || item.id,
+              description: item.description || '',
+              image: null, // Will be populated by fetchWikidataImages
+              imageLoading: false
+            }));
+            this.wikidataSearchResults[entityId] = searchResults;
+            // Reset selected index when new results come in
+            this.wikidataSelectedIndex[entityId] = -1;
+            // Fetch images for the results
+            this.fetchWikidataImages(entityId, searchResults);
+          } else {
+            this.wikidataSearchResults[entityId] = [];
+            this.wikidataSelectedIndex[entityId] = -1;
+          }
+        } catch (error) {
+          console.error('Error searching Wikidata:', error);
+          this.wikidataSearchResults[entityId] = [];
+          this.wikidataSelectedIndex[entityId] = -1;
+        } finally {
+          this.wikidataSearchLoading[entityId] = false;
+        }
+      }, 300); // 300ms debounce
+    },
+
+    selectWikidataItem(entity, item) {
+      // Select a Wikidata item from search results
+      entity.wikiQid = item.id;
+      entity.wikiLabel = item.label;
+      entity.wikiDescription = item.description;
+      entity.wikiNoMatch = false;
+      
+      // Clear search state
+      this.wikidataSearchQueries[entity.internal_id] = '';
+      this.wikidataSearchResults[entity.internal_id] = [];
+      
+      // Retrieve additional data
+      this.retriveWikidataEntity(entity);
+    },
+
+    clearWikidataSearch(entityId) {
+      // Clear search results when clicking outside
+      setTimeout(() => {
+        this.wikidataSearchResults[entityId] = [];
+        this.wikidataSelectedIndex[entityId] = -1;
+      }, 200);
+    },
+
+    handleWikidataKeydown(event, entity) {
+      const entityId = entity.internal_id;
+      const results = this.wikidataSearchResults[entityId];
+      
+      if (!results || results.length === 0) {
+        // If no results but typing, don't interfere with normal typing
+        return;
+      }
+      
+      // Initialize index if it doesn't exist
+      if (this.wikidataSelectedIndex[entityId] === undefined) {
+        this.wikidataSelectedIndex[entityId] = -1;
+      }
+      
+      const currentIndex = this.wikidataSelectedIndex[entityId];
+      
+      switch(event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          event.stopPropagation();
+          // Move down in the list, wrap to -1 at the end
+          if (currentIndex >= results.length - 1) {
+            this.wikidataSelectedIndex[entityId] = 0;
+          } else {
+            this.wikidataSelectedIndex[entityId] = currentIndex + 1;
+          }
+          console.log('Arrow Down - New index:', this.wikidataSelectedIndex[entityId]);
+          this.scrollToSelectedItem(entityId);
+          break;
+          
+        case 'ArrowUp':
+          event.preventDefault();
+          event.stopPropagation();
+          // Move up in the list, wrap to bottom at the top
+          if (currentIndex <= 0) {
+            this.wikidataSelectedIndex[entityId] = results.length - 1;
+          } else {
+            this.wikidataSelectedIndex[entityId] = currentIndex - 1;
+          }
+          console.log('Arrow Up - New index:', this.wikidataSelectedIndex[entityId]);
+          this.scrollToSelectedItem(entityId);
+          break;
+          
+        case 'Enter':
+          if (currentIndex >= 0 && currentIndex < results.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.selectWikidataItem(entity, results[currentIndex]);
+            console.log('Enter - Selecting item at index:', currentIndex);
+          }
+          break;
+          
+        case 'Escape':
+          event.preventDefault();
+          event.stopPropagation();
+          this.wikidataSearchResults[entityId] = [];
+          this.wikidataSelectedIndex[entityId] = -1;
+          console.log('Escape - Closing dropdown');
+          break;
+      }
+    },
+
+    scrollToSelectedItem(entityId) {
+      // Scroll the dropdown to keep the selected item visible
+      this.$nextTick(() => {
+        const selectedIndex = this.wikidataSelectedIndex[entityId];
+        if (selectedIndex < 0) return;
+        
+        // Find the dropdown container and the selected item
+        const dropdownContainer = document.querySelector(`.wikidata-autocomplete-${entityId} .dropdown-content`);
+        const selectedItem = document.querySelector(`.wikidata-autocomplete-${entityId} .dropdown-item:nth-child(${selectedIndex + 1})`);
+        
+        if (dropdownContainer && selectedItem) {
+          const containerHeight = dropdownContainer.clientHeight;
+          const itemHeight = selectedItem.offsetHeight;
+          const itemTop = selectedItem.offsetTop;
+          const scrollTop = dropdownContainer.scrollTop;
+          
+          // Check if item is above visible area
+          if (itemTop < scrollTop) {
+            dropdownContainer.scrollTop = itemTop;
+          }
+          // Check if item is below visible area
+          else if (itemTop + itemHeight > scrollTop + containerHeight) {
+            dropdownContainer.scrollTop = itemTop + itemHeight - containerHeight;
+          }
+        }
+      });
+    },
+
+    async fetchWikidataImages(entityId, searchResults) {
+      // Fetch images for search results using SPARQL
+      if (!searchResults || searchResults.length === 0) return;
+      
+      const qids = searchResults.map(item => `wd:${item.id}`).join(' ');
+      const sparql = `
+        SELECT ?entity ?image WHERE {
+          VALUES ?entity { ${qids} }
+          OPTIONAL { ?entity wdt:P18 ?image. }
+        }
+      `;
+      
+      try {
+        const sparqlUrl = 'https://query.wikidata.org/sparql';
+        const response = await fetch(sparqlUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/sparql-results+json',
+            'User-Agent': 'WikidataAutocomplete/1.0'
+          },
+          body: `query=${encodeURIComponent(sparql)}`
+        });
+        
+        const data = await response.json();
+        
+        if (data.results && data.results.bindings) {
+          // Create a map of QID to image URL
+          const imageMap = {};
+          data.results.bindings.forEach(binding => {
+            if (binding.entity && binding.image) {
+              const qid = binding.entity.value.replace('http://www.wikidata.org/entity/', '');
+              imageMap[qid] = binding.image.value;
+            }
+          });
+          
+          // Update the search results with thumbnail images
+          const currentResults = this.wikidataSearchResults[entityId];
+          if (currentResults) {
+            currentResults.forEach(item => {
+              if (imageMap[item.id]) {
+                // Convert to thumbnail URL (80px width)
+                console.log("imageMap[item.id]", imageMap[item.id])
+                console.log(item)
+                item.image = this.convertToThumbnail(imageMap[item.id], 80);
+              }
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching Wikidata images:', error);
+      }
+    },
+
+    convertToThumbnail(imageUrl, width = 80) {
+      // Convert full Wikimedia Commons URLs to thumbnail URLs using MD5 hashing
+      if (!imageUrl || !imageUrl.includes('commons.wikimedia.org')) {
+        return imageUrl;
+      }
+
+      try {
+        // Extract filename from the URL
+        let filename;
+        if (imageUrl.includes('/wiki/File:')) {
+          filename = imageUrl.split('/wiki/File:')[1];
+        } else if (imageUrl.includes('/wikipedia/commons/')) {
+          filename = imageUrl.split('/').pop();
+        } else {
+          filename = imageUrl.split('/').pop();
+        }
+
+
+        // Decode URL encoding if present
+        filename = decodeURIComponent(filename);
+        filename = filename.replace(/ /g, '_'); // Replace spaces with underscores for MD5
+
+        console.log('Extracted filename:', filename);
+        console.log(filename.replace(/ /g, '_'))
+        // Generate MD5 hash of filename using proper MD5 implementation
+        const md5Hash = this.md5(filename);
+
+        
+        // Build thumbnail URL according to Wikimedia rules:
+        // https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/Tour_Eiffel_Wikimedia_Commons.jpg/200px-Tour_Eiffel_Wikimedia_Commons.jpg
+        const firstChar = md5Hash.charAt(0);
+        const firstTwoChars = md5Hash.substring(0, 2);
+        
+        const thumbnailUrl = `https://upload.wikimedia.org/wikipedia/commons/thumb/${firstChar}/${firstTwoChars}/${encodeURIComponent(filename)}/${width}px-${encodeURIComponent(filename)}`;
+        
+        console.log('Converting image URL:', filename, 'hash:', md5Hash, '->', thumbnailUrl);
+        return thumbnailUrl;
+      } catch (error) {
+        console.error('Error converting to thumbnail:', error);
+        return imageUrl;
+      }
+    },
+
+    md5cycle(x, k) {
+      var a = x[0], b = x[1], c = x[2], d = x[3];
+
+      a = this.ff(a, b, c, d, k[0], 7, -680876936);
+      d = this.ff(d, a, b, c, k[1], 12, -389564586);
+      c = this.ff(c, d, a, b, k[2], 17,  606105819);
+      b = this.ff(b, c, d, a, k[3], 22, -1044525330);
+      a = this.ff(a, b, c, d, k[4], 7, -176418897);
+      d = this.ff(d, a, b, c, k[5], 12,  1200080426);
+      c = this.ff(c, d, a, b, k[6], 17, -1473231341);
+      b = this.ff(b, c, d, a, k[7], 22, -45705983);
+      a = this.ff(a, b, c, d, k[8], 7,  1770035416);
+      d = this.ff(d, a, b, c, k[9], 12, -1958414417);
+      c = this.ff(c, d, a, b, k[10], 17, -42063);
+      b = this.ff(b, c, d, a, k[11], 22, -1990404162);
+      a = this.ff(a, b, c, d, k[12], 7,  1804603682);
+      d = this.ff(d, a, b, c, k[13], 12, -40341101);
+      c = this.ff(c, d, a, b, k[14], 17, -1502002290);
+      b = this.ff(b, c, d, a, k[15], 22,  1236535329);
+
+      a = this.gg(a, b, c, d, k[1], 5, -165796510);
+      d = this.gg(d, a, b, c, k[6], 9, -1069501632);
+      c = this.gg(c, d, a, b, k[11], 14,  643717713);
+      b = this.gg(b, c, d, a, k[0], 20, -373897302);
+      a = this.gg(a, b, c, d, k[5], 5, -701558691);
+      d = this.gg(d, a, b, c, k[10], 9,  38016083);
+      c = this.gg(c, d, a, b, k[15], 14, -660478335);
+      b = this.gg(b, c, d, a, k[4], 20, -405537848);
+      a = this.gg(a, b, c, d, k[9], 5,  568446438);
+      d = this.gg(d, a, b, c, k[14], 9, -1019803690);
+      c = this.gg(c, d, a, b, k[3], 14, -187363961);
+      b = this.gg(b, c, d, a, k[8], 20,  1163531501);
+      a = this.gg(a, b, c, d, k[13], 5, -1444681467);
+      d = this.gg(d, a, b, c, k[2], 9, -51403784);
+      c = this.gg(c, d, a, b, k[7], 14,  1735328473);
+      b = this.gg(b, c, d, a, k[12], 20, -1926607734);
+
+      a = this.hh(a, b, c, d, k[5], 4, -378558);
+      d = this.hh(d, a, b, c, k[8], 11, -2022574463);
+      c = this.hh(c, d, a, b, k[11], 16,  1839030562);
+      b = this.hh(b, c, d, a, k[14], 23, -35309556);
+      a = this.hh(a, b, c, d, k[1], 4, -1530992060);
+      d = this.hh(d, a, b, c, k[4], 11,  1272893353);
+      c = this.hh(c, d, a, b, k[7], 16, -155497632);
+      b = this.hh(b, c, d, a, k[10], 23, -1094730640);
+      a = this.hh(a, b, c, d, k[13], 4,  681279174);
+      d = this.hh(d, a, b, c, k[0], 11, -358537222);
+      c = this.hh(c, d, a, b, k[3], 16, -722521979);
+      b = this.hh(b, c, d, a, k[6], 23,  76029189);
+      a = this.hh(a, b, c, d, k[9], 4, -640364487);
+      d = this.hh(d, a, b, c, k[12], 11, -421815835);
+      c = this.hh(c, d, a, b, k[15], 16,  530742520);
+      b = this.hh(b, c, d, a, k[2], 23, -995338651);
+
+      a = this.ii(a, b, c, d, k[0], 6, -198630844);
+      d = this.ii(d, a, b, c, k[7], 10,  1126891415);
+      c = this.ii(c, d, a, b, k[14], 15, -1416354905);
+      b = this.ii(b, c, d, a, k[5], 21, -57434055);
+      a = this.ii(a, b, c, d, k[12], 6,  1700485571);
+      d = this.ii(d, a, b, c, k[3], 10, -1894986606);
+      c = this.ii(c, d, a, b, k[10], 15, -1051523);
+      b = this.ii(b, c, d, a, k[1], 21, -2054922799);
+      a = this.ii(a, b, c, d, k[8], 6,  1873313359);
+      d = this.ii(d, a, b, c, k[15], 10, -30611744);
+      c = this.ii(c, d, a, b, k[6], 15, -1560198380);
+      b = this.ii(b, c, d, a, k[13], 21,  1309151649);
+      a = this.ii(a, b, c, d, k[4], 6, -145523070);
+      d = this.ii(d, a, b, c, k[11], 10, -1120210379);
+      c = this.ii(c, d, a, b, k[2], 15,  718787259);
+      b = this.ii(b, c, d, a, k[9], 21, -343485551);
+
+      x[0] = this.add32(a, x[0]);
+      x[1] = this.add32(b, x[1]);
+      x[2] = this.add32(c, x[2]);
+      x[3] = this.add32(d, x[3]);
+    },
+
+    cmn(q, a, b, x, s, t) {
+      a = this.add32(this.add32(a, q), this.add32(x, t));
+      return this.add32((a << s) | (a >>> (32 - s)), b);
+    },
+
+    ff(a, b, c, d, x, s, t) {
+      return this.cmn((b & c) | ((~b) & d), a, b, x, s, t);
+    },
+
+    gg(a, b, c, d, x, s, t) {
+      return this.cmn((b & d) | (c & (~d)), a, b, x, s, t);
+    },
+
+    hh(a, b, c, d, x, s, t) {
+      return this.cmn(b ^ c ^ d, a, b, x, s, t);
+    },
+
+    ii(a, b, c, d, x, s, t) {
+      return this.cmn(c ^ (b | (~d)), a, b, x, s, t);
+    },
+
+    md51(s) {
+      var n = s.length,
+      state = [1732584193, -271733879, -1732584194, 271733878], i;
+      for (i=64; i<=s.length; i+=64) {
+        this.md5cycle(state, this.md5blk(s.substring(i-64, i)));
+      }
+      s = s.substring(i-64);
+      var tail = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0];
+      for (i=0; i<s.length; i++)
+        tail[i>>2] |= s.charCodeAt(i) << ((i%4) << 3);
+      tail[i>>2] |= 0x80 << ((i%4) << 3);
+      if (i > 55) {
+        this.md5cycle(state, tail);
+        for (i=0; i<16; i++) tail[i] = 0;
+      }
+      tail[14] = n*8;
+      this.md5cycle(state, tail);
+      return state;
+    },
+
+    md5blk(s) {
+      var md5blks = [], i;
+      for (i=0; i<64; i+=4) {
+        md5blks[i>>2] = s.charCodeAt(i)
+        + (s.charCodeAt(i+1) << 8)
+        + (s.charCodeAt(i+2) << 16)
+        + (s.charCodeAt(i+3) << 24);
+      }
+      return md5blks;
+    },
+
+    rhex(n) {
+      var hex_chr = '0123456789abcdef'.split('');
+      var s='', j=0;
+      for(; j<4; j++)
+        s += hex_chr[(n >> (j * 8 + 4)) & 0x0F]
+        + hex_chr[(n >> (j * 8)) & 0x0F];
+      return s;
+    },
+
+    hex(x) {
+      for (var i=0; i<x.length; i++)
+        x[i] = this.rhex(x[i]);
+      return x.join('');
+    },
+
+    md5(s) {
+      return this.hex(this.md51(s));
+    },
+
+    add32(a, b) {
+      return (a + b) & 0xFFFFFFFF;
+    },
+
+    handleWikidataFocus(entity) {
+      // Pre-populate the search field with entity label and kick off search
+      const entityId = entity.internal_id;
+      const searchTerm = entity.useLabel || entity.entity;
+      
+      // Set the search query and trigger search
+      this.wikidataSearchQueries[entityId] = searchTerm;
+      this.searchWikidata(entityId, searchTerm);
+    },
+
+    async searchSemlab(entityId, query) {
+      // Search SemLab API with debounce
+      if (!query || query.length < 2) {
+        this.semlabSearchResults[entityId] = [];
+        this.semlabSelectedIndex[entityId] = -1;
+        return;
+      }
+
+      // Clear existing timer
+      if (this.semlabSearchTimers[entityId]) {
+        clearTimeout(this.semlabSearchTimers[entityId]);
+      }
+
+      // Set loading state
+      this.semlabSearchLoading[entityId] = true;
+
+      // Debounce the search
+      this.semlabSearchTimers[entityId] = setTimeout(() => {
+        socket.emit('search_semlab_autocomplete',  query, (response) => {
+          console.log('SemLab search response:', response);
+          try {
+            if (response.success && response.data && response.data.search) {
+              const searchResults = response.data.search.map(item => ({
+                id: item.id,
+                label: item.label || item.id,
+                description: item.description || ''
+              }));
+              this.semlabSearchResults[entityId] = searchResults;
+              // Reset selected index when new results come in
+              this.semlabSelectedIndex[entityId] = -1;
+            } else {
+              this.semlabSearchResults[entityId] = [];
+              this.semlabSelectedIndex[entityId] = -1;
+            }
+          } catch (error) {
+            console.error('Error processing SemLab search response:', error);
+            this.semlabSearchResults[entityId] = [];
+            this.semlabSelectedIndex[entityId] = -1;
+          } finally {
+            this.semlabSearchLoading[entityId] = false;
+          }
+        });
+      }, 300); // 300ms debounce
+    },
+
+    async selectSemlabItem(entity, item) {
+      // Select a SemLab item from search results
+      entity.qid = item.id;
+      entity.labelSemlab = item.label;
+      entity.descriptionSemlab = item.description;
+      
+      // Clear search state
+      this.semlabSearchQueries[entity.internal_id] = '';
+      this.semlabSearchResults[entity.internal_id] = [];
+
+
+      let enriched = await this.enrichWithSemlabLabels([entity]);
+
+      if (enriched && enriched.allThumbnails && enriched.allThumbnails[entity.qid]) {
+        entity.thumbnail = enriched.allThumbnails[entity.qid];
+      }
+
+      if (enriched && enriched.allWikidata && enriched.allWikidata[entity.qid]) {
+        entity.wikiQid = enriched.allWikidata[entity.qid];
+        entity.wikiLabel = enriched.allLabels[entity.qid] || '';
+      }
+
+
+      console.log('Enriched entity with SemLab labels:', enriched);
+      console.log('Selected SemLab item:', entity);
+
+    },
+
+    clearSemlabSearch(entityId) {
+      // Clear search results when clicking outside
+      setTimeout(() => {
+        this.semlabSearchResults[entityId] = [];
+        this.semlabSelectedIndex[entityId] = -1;
+      }, 200);
+    },
+
+    handleSemlabKeydown(event, entity) {
+      const entityId = entity.internal_id;
+      const results = this.semlabSearchResults[entityId];
+      
+      if (!results || results.length === 0) {
+        return;
+      }
+      
+      // Initialize index if it doesn't exist
+      if (this.semlabSelectedIndex[entityId] === undefined) {
+        this.semlabSelectedIndex[entityId] = -1;
+      }
+      
+      const currentIndex = this.semlabSelectedIndex[entityId];
+      
+      switch(event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          event.stopPropagation();
+          if (currentIndex >= results.length - 1) {
+            this.semlabSelectedIndex[entityId] = 0;
+          } else {
+            this.semlabSelectedIndex[entityId] = currentIndex + 1;
+          }
+          this.scrollToSelectedSemlabItem(entityId);
+          break;
+          
+        case 'ArrowUp':
+          event.preventDefault();
+          event.stopPropagation();
+          if (currentIndex <= 0) {
+            this.semlabSelectedIndex[entityId] = results.length - 1;
+          } else {
+            this.semlabSelectedIndex[entityId] = currentIndex - 1;
+          }
+          this.scrollToSelectedSemlabItem(entityId);
+          break;
+          
+        case 'Enter':
+          if (currentIndex >= 0 && currentIndex < results.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.selectSemlabItem(entity, results[currentIndex]);
+          }
+          break;
+          
+        case 'Escape':
+          event.preventDefault();
+          event.stopPropagation();
+          this.semlabSearchResults[entityId] = [];
+          this.semlabSelectedIndex[entityId] = -1;
+          break;
+      }
+    },
+
+    scrollToSelectedSemlabItem(entityId) {
+      // Scroll the SemLab dropdown to keep the selected item visible
+      this.$nextTick(() => {
+        const selectedIndex = this.semlabSelectedIndex[entityId];
+        if (selectedIndex < 0) return;
+        
+        const dropdownContainer = document.querySelector(`.semlab-autocomplete-${entityId} .dropdown-content`);
+        const selectedItem = document.querySelector(`.semlab-autocomplete-${entityId} .dropdown-item:nth-child(${selectedIndex + 1})`);
+        
+        if (dropdownContainer && selectedItem) {
+          const containerHeight = dropdownContainer.clientHeight;
+          const itemHeight = selectedItem.offsetHeight;
+          const itemTop = selectedItem.offsetTop;
+          const scrollTop = dropdownContainer.scrollTop;
+          
+          if (itemTop < scrollTop) {
+            dropdownContainer.scrollTop = itemTop;
+          } else if (itemTop + itemHeight > scrollTop + containerHeight) {
+            dropdownContainer.scrollTop = itemTop + itemHeight - containerHeight;
+          }
+        }
+      });
+    },
+
+    handleSemlabFocus(entity) {
+      // Pre-populate the SemLab search field with entity label and kick off search
+      const entityId = entity.internal_id;
+      const searchTerm = entity.useLabel || entity.entity;
+      
+      this.semlabSearchQueries[entityId] = searchTerm;
+      this.searchSemlab(entityId, searchTerm);
+    },
+
+    removeWikidataQid(entity) {
+      // Remove Wikidata QID and related data from entity
+      delete entity.wikiQid;
+      delete entity.wikiLabel;
+      delete entity.wikiDescription;
+      delete entity.wikiConfidence;
+      delete entity.wikiReason;
+      delete entity.wikiThumbnail;
+      delete entity.wikiChecked;
+      delete entity.wikiNoMatch;
+    },
+
+    removeSemlabQid(entity) {
+      // Remove SemLab QID and related data from entity
+      delete entity.qid;
+      delete entity.labelSemlab;
+      delete entity.descriptionSemlab;
+      delete entity.wikiBaseConfidence;
+      delete entity.wikiBaseReason;
+      delete entity.thumbnail;
+      delete entity.wikiBaseChecked;
+      delete entity.wikiBaseNoMatch;
+      delete entity.wikiBaseNoGoodMatch;
     },
 
     // markComplete() {
@@ -1314,14 +2003,20 @@ export default {
       prompt += `\n\nText:\n"${allBlockText}"\n\n`
       console.log(prompt)
 
-
-      // let response = await asyncEmit('ask_llm_normalize_labels', prompt);
-      // if (!response || !response.success || !response.response) {
-      //   console.error("Error normalizing labels:", response.error);
-      //   alert("There was an error normalizing the labels, please try again.");
-      //   return;
-      // }
-      let response = {"success":true,"response":[{"internal_id":"1","labels":["Art Albiston"],"normalizedLabels":["Art Albiston"]},{"internal_id":"2","labels":["Alexander Offset Co."],"normalizedLabels":["Alexander Offset Company"]},{"internal_id":"3","labels":["W. Barry"],"normalizedLabels":["W. Barry"]},{"internal_id":"4","labels":["Genie Productions, Inc."],"normalizedLabels":["Genie Productions Incorporated"]},{"internal_id":"5","labels":["Mr. Botz"],"normalizedLabels":["Botz"]},{"internal_id":"6","labels":["Sam Kass"],"normalizedLabels":["Sam Kass"]},{"internal_id":"7","labels":["Olga Kluver"],"normalizedLabels":["Olga Kluver"]},{"internal_id":"8","labels":["Suzanne Konigsberg"],"normalizedLabels":["Suzanne Konigsberg"]},{"internal_id":"9","labels":["Joel Lucas"],"normalizedLabels":["Joel Lucas"]},{"internal_id":"10","labels":["Colonel Lutz"],"normalizedLabels":["Lutz"]},{"internal_id":"11","labels":["Howard Marks Advertising"],"normalizedLabels":["Howard Marks Advertising"]},{"internal_id":"12","labels":["Norman Craig & Kummel, Inc."],"normalizedLabels":["Norman Craig & Kummel Incorporated"]},{"internal_id":"13","labels":["Maury Oren"],"normalizedLabels":["Maury Oren"]},{"internal_id":"14","labels":["Ruder and Finn, Inc."],"normalizedLabels":["Ruder and Finn Incorporated"]},{"internal_id":"15","labels":["Alice Schwebke"],"normalizedLabels":["Alice Schwebke"]},{"internal_id":"16","labels":["Jeff Strickler"],"normalizedLabels":["Jeff Strickler"]},{"internal_id":"17","labels":["Nancy Rose Chandler"],"normalizedLabels":["Nancy Rose Chandler"]},{"internal_id":"18","labels":["Barbara Jarvis"],"normalizedLabels":["Barbara Jarvis"]},{"internal_id":"19","labels":["Jim Brady"],"normalizedLabels":["Jim Brady"]},{"internal_id":"20","labels":["Gloria Bryant"],"normalizedLabels":["Gloria Bryant"]},{"internal_id":"21","labels":["Howard Marks"],"normalizedLabels":["Howard Marks"]},{"internal_id":"22","labels":["Mount Sinai Sleep Laboratory"],"normalizedLabels":["Mount Sinai Sleep Laboratory"]},{"internal_id":"23","labels":["Peter Moore"],"normalizedLabels":["Peter Moore"]},{"internal_id":"24","labels":["David Long"],"normalizedLabels":["David Long"]},{"internal_id":"25","labels":["Coltronics"],"normalizedLabels":["Coltronics"]},{"internal_id":"26","labels":["Ditta Agrippa"],"normalizedLabels":["Ditta Agrippa"]},{"internal_id":"27","labels":["Rome"],"normalizedLabels":["Rome"]},{"internal_id":"28","labels":["Downtown Community School"],"normalizedLabels":["Downtown Community School"]},{"internal_id":"29","labels":["Joseph M. Fallica"],"normalizedLabels":["Joseph M. Fallica"]},{"internal_id":"30","labels":["Federated Electronics"],"normalizedLabels":["Federated Electronics"]},{"internal_id":"31","labels":["Flexi-Optics"],"normalizedLabels":["Flexi-Optics"]},{"internal_id":"32","labels":["Rubin Gorowitz"],"normalizedLabels":["Rubin Gorowitz"]},{"internal_id":"33","labels":["Linda Perlman"],"normalizedLabels":["Linda Perlman"]},{"internal_id":"34","labels":["Conrad Pologe"],"normalizedLabels":["Conrad Pologe"]},{"internal_id":"35","labels":["John Powers"],"normalizedLabels":["John Powers"]},{"internal_id":"36","labels":["Ralsen-Grocraft-Andors Press Corp."],"normalizedLabels":["Ralsen-Grocraft-Andors Press Corporation"]},{"internal_id":"37","labels":["Suzan Rolfe"],"normalizedLabels":["Suzan Rolfe"]},{"internal_id":"38","labels":["Robert Rauschenberg","Robert Rauschenberg's","Rauschenberg's","Bob"],"normalizedLabels":["Robert Rauschenberg"]},{"internal_id":"39","labels":["RGA Press"],"normalizedLabels":["RGA Press"]},{"internal_id":"40","labels":["Pontus Hulten"],"normalizedLabels":["Pontus Hulten"]},{"internal_id":"41","labels":["Frank Konigsberg"],"normalizedLabels":["Frank Konigsberg"]},{"internal_id":"42","labels":["Herb Schneider","Herb"],"normalizedLabels":["Herb Schneider"]},{"internal_id":"43","labels":["Ronald Hobbs"],"normalizedLabels":["Ronald Hobbs"]},{"internal_id":"44","labels":["Tom Slater"],"normalizedLabels":["Tom Slater"]},{"internal_id":"45","labels":["Jennifer Tipton"],"normalizedLabels":["Jennifer Tipton"]},{"internal_id":"46","labels":["Beverly Emmonds"],"normalizedLabels":["Beverly Emmonds"]},{"internal_id":"47","labels":["Jey Bell"],"normalizedLabels":["Jey Bell"]},{"internal_id":"48","labels":["Alphonse Schilling"],"normalizedLabels":["Alphonse Schilling"]},{"internal_id":"49","labels":["Sid Gross"],"normalizedLabels":["Sid Gross"]},{"internal_id":"50","labels":["Hartig and Sons"],"normalizedLabels":["Hartig and Sons"]},{"internal_id":"51","labels":["Joanne Santo"],"normalizedLabels":["Joanne Santo"]},{"internal_id":"52","labels":["Thelma Schoonmacher"],"normalizedLabels":["Thelma Schoonmacher"]},{"internal_id":"53","labels":["Philip Idoni"],"normalizedLabels":["Philip Idoni"]},{"internal_id":"54","labels":["Sue Hartnett"],"normalizedLabels":["Sue Hartnett"]},{"internal_id":"55","labels":["Eleanor Howard"],"normalizedLabels":["Eleanor Howard"]},{"internal_id":"56","labels":["I. F. Jackson Electric Co."],"normalizedLabels":["I. F. Jackson Electric Company"]},{"internal_id":"57","labels":["Nina Kaiden"],"normalizedLabels":["Nina Kaiden"]},{"internal_id":"58","labels":["Weltz Ad Service Typography Co."],"normalizedLabels":["Weltz Ad Service Typography Company"]},{"internal_id":"59","labels":["Simone Whitman"],"normalizedLabels":["Simone Whitman"]},{"internal_id":"60","labels":["Georgelle Williams"],"normalizedLabels":["Georgelle Williams"]},{"internal_id":"61","labels":["Per Biorn"],"normalizedLabels":["Per Biorn"]},{"internal_id":"62","labels":["Copenhagen"],"normalizedLabels":["Copenhagen"]},{"internal_id":"63","labels":["Lucinda Childs","Lucinda"],"normalizedLabels":["Lucinda Childs"]},{"internal_id":"64","labels":["TEEM","TEEM system"],"normalizedLabels":["TEEM system"]},{"internal_id":"65","labels":["Yvonne Rainer","Rainer","Yvonne"],"normalizedLabels":["Yvonne Rainer"]},{"internal_id":"66","labels":["John Cage","John Cage's","Cage's"],"normalizedLabels":["John Cage"]},{"internal_id":"67","labels":["Los Angeles"],"normalizedLabels":["Los Angeles"]},{"internal_id":"68","labels":["Merce Cunningham Dance Company","Cunningham Dance Company"],"normalizedLabels":["Merce Cunningham Dance Company"]},{"internal_id":"69","labels":["Silence"],"normalizedLabels":["Silence"]},{"internal_id":"70","labels":["Irfan Camlibel"],"normalizedLabels":["Irfan Camlibel"]},{"internal_id":"71","labels":["Istanbul"],"normalizedLabels":["Istanbul"]},{"internal_id":"72","labels":["Judson Dance Theater"],"normalizedLabels":["Judson Dance Theater"]},{"internal_id":"73","labels":["Sarah Lawrence Cortese"],"normalizedLabels":["Sarah Lawrence Cortese"]},{"internal_id":"74","labels":["Mia Slavenska"],"normalizedLabels":["Mia Slavenska"]},{"internal_id":"75","labels":["Merce Cunningham","Merce Cunningham's","Cunningham"],"normalizedLabels":["Merce Cunningham"]},{"internal_id":"76","labels":["Cecil Coker","Cecil"],"normalizedLabels":["Cecil Coker"]},{"internal_id":"77","labels":["Kewanee"],"normalizedLabels":["Kewanee"]},{"internal_id":"78","labels":["Mississippi"],"normalizedLabels":["Mississippi"]},{"internal_id":"79","labels":["Philharmonic Hall"],"normalizedLabels":["Philharmonic Hall"]},{"internal_id":"80","labels":["Linoleum"],"normalizedLabels":["Linoleum"]},{"internal_id":"81","labels":["Pete Cumminski","Pete"],"normalizedLabels":["Pete Cumminski"]},{"internal_id":"82","labels":["Hasbrouch Heights"],"normalizedLabels":["Hasbrouch Heights"]},{"internal_id":"83","labels":["N.J."],"normalizedLabels":["New Jersey"]},{"internal_id":"84","labels":["Alex Hay","Hay","Alex"],"normalizedLabels":["Alex Hay"]},{"internal_id":"85","labels":["Oyvind Fahlstrom","Oyvind"],"normalizedLabels":["Oyvind Fahlstrom"]},{"internal_id":"86","labels":["Brazil"],"normalizedLabels":["Brazil"]},{"internal_id":"87","labels":["Sweden"],"normalizedLabels":["Sweden"]},{"internal_id":"88","labels":["Italy"],"normalizedLabels":["Italy"]},{"internal_id":"89","labels":["France"],"normalizedLabels":["France"]},{"internal_id":"90","labels":["U.S.A.","U. S."],"normalizedLabels":["United States of America"]},{"internal_id":"91","labels":["Venice Biennale"],"normalizedLabels":["Venice Biennale"]},{"internal_id":"92","labels":["Stockholm"],"normalizedLabels":["Stockholm"]},{"internal_id":"93","labels":["Kisses Sweeter than Wine"],"normalizedLabels":["Kisses Sweeter than Wine"]},{"internal_id":"94","labels":["America"],"normalizedLabels":["America"]},{"internal_id":"95","labels":["Janis Gallery"],"normalizedLabels":["Janis Gallery"]},{"internal_id":"96","labels":["Ralph Flynn"],"normalizedLabels":["Ralph Flynn"]},{"internal_id":"97","labels":["Andover"],"normalizedLabels":["Andover"]},{"internal_id":"98","labels":["Massachusetts"],"normalizedLabels":["Massachusetts"]},{"internal_id":"99","labels":["Boston"],"normalizedLabels":["Boston"]},{"internal_id":"100","labels":["Fred Waldhauer","Fred"],"normalizedLabels":["Fred Waldhauer"]},{"internal_id":"101","labels":["Florida"],"normalizedLabels":["Florida"]},{"internal_id":"102","labels":["Leo Castelli"],"normalizedLabels":["Leo Castelli"]},{"internal_id":"103","labels":["Deborah Hay","Deborah Hay's"],"normalizedLabels":["Deborah Hay"]},{"internal_id":"104","labels":["Brooklyn"],"normalizedLabels":["Brooklyn"]},{"internal_id":"105","labels":["Europe"],"normalizedLabels":["Europe"]},{"internal_id":"106","labels":["Asia"],"normalizedLabels":["Asia"]},{"internal_id":"107","labels":["Summer 1965"],"normalizedLabels":["Summer 1965"]},{"internal_id":"108","labels":["Ken Harsell"],"normalizedLabels":["Ken Harsell"]},{"internal_id":"109","labels":["Elizabeth"],"normalizedLabels":["Elizabeth"]},{"internal_id":"110","labels":["Larry Heilos","Larry"],"normalizedLabels":["Larry Heilos"]},{"internal_id":"111","labels":["Japan"],"normalizedLabels":["Japan"]},{"internal_id":"112","labels":["Peter Hirsch","Peter"],"normalizedLabels":["Peter Hirsch"]},{"internal_id":"113","labels":["Germany"],"normalizedLabels":["Germany"]},{"internal_id":"114","labels":["Harold Hodges","Harold"],"normalizedLabels":["Harold Hodges"]},{"internal_id":"115","labels":["Jean Tingueley's"],"normalizedLabels":["Jean Tinguely"]},{"internal_id":"116","labels":["self-destructive machine"],"normalizedLabels":["self-destructive machine"]},{"internal_id":"117","labels":["1960"],"normalizedLabels":["1960"]},{"internal_id":"118","labels":["Oracle"],"normalizedLabels":["Oracle"]},{"internal_id":"119","labels":["Bela Julesz"],"normalizedLabels":["Bela Julesz"]},{"internal_id":"120","labels":["Budapest"],"normalizedLabels":["Budapest"]},{"internal_id":"121","labels":["Sensory and Perceptual Processes Department"],"normalizedLabels":["Sensory and Perceptual Processes Department"]},{"internal_id":"122","labels":["Bell Labs","Bell"],"normalizedLabels":["Bell Labs"]},{"internal_id":"123","labels":["Bill Kaminski","Bill"],"normalizedLabels":["Bill Kaminski"]},{"internal_id":"124","labels":["FCC"],"normalizedLabels":["Federal Communications Commission"]},{"internal_id":"125","labels":["Rudy Kerl"],"normalizedLabels":["Rudy Kerl"]},{"internal_id":"126","labels":["Bob Kieronski"],"normalizedLabels":["Bob Kieronski"]},{"internal_id":"127","labels":["Philadelphia"],"normalizedLabels":["Philadelphia"]},{"internal_id":"128","labels":["Vochrome"],"normalizedLabels":["Vochrome"]},{"internal_id":"129","labels":["David Tudor","David's"],"normalizedLabels":["David Tudor"]},{"internal_id":"130","labels":["Louis Maggi","Louis"],"normalizedLabels":["Louis Maggi"]},{"internal_id":"131","labels":["Max Matthews"],"normalizedLabels":["Max Matthews"]},{"internal_id":"132","labels":["Columbus"],"normalizedLabels":["Columbus"]},{"internal_id":"133","labels":["Nebraska"],"normalizedLabels":["Nebraska"]},{"internal_id":"134","labels":["Behaviorial Research Laboratory"],"normalizedLabels":["Behavioral Research Laboratory"]},{"internal_id":"135","labels":["Jim McGee"],"normalizedLabels":["Jim McGee"]},{"internal_id":"136","labels":["Illinois"],"normalizedLabels":["Illinois"]},{"internal_id":"137","labels":["Steve Paxton","Steve","Steve Paxton's"],"normalizedLabels":["Steve Paxton"]},{"internal_id":"138","labels":["Surplus Dance Theater"],"normalizedLabels":["Surplus Dance Theater"]},{"internal_id":"139","labels":["1964"],"normalizedLabels":["1964"]},{"internal_id":"140","labels":["First New York Theater Rally"],"normalizedLabels":["First New York Theater Rally"]},{"internal_id":"141","labels":["1965"],"normalizedLabels":["1965"]},{"internal_id":"142","labels":["John Pierce"],"normalizedLabels":["John Pierce"]},{"internal_id":"143","labels":["Stretch Winslow","Stretch"],"normalizedLabels":["Stretch Winslow"]},{"internal_id":"144","labels":["1925"],"normalizedLabels":["1925"]},{"internal_id":"145","labels":["Port Arthur"],"normalizedLabels":["Port Arthur"]},{"internal_id":"146","labels":["Texas"],"normalizedLabels":["Texas"]},{"internal_id":"147","labels":["1955-65"],"normalizedLabels":["1955-1965"]},{"internal_id":"148","labels":["Paul Taylor","Taylor"],"normalizedLabels":["Paul Taylor"]},{"internal_id":"149","labels":["1957-59"],"normalizedLabels":["1957-1959"]},{"internal_id":"150","labels":["Dunn"],"normalizedLabels":["Dunn"]},{"internal_id":"151","labels":["Collaboration for David Tudor"],"normalizedLabels":["Collaboration for David Tudor"]},{"internal_id":"152","labels":["1961"],"normalizedLabels":["1961"]},{"internal_id":"153","labels":["The Construction of Boston"],"normalizedLabels":["The Construction of Boston"]},{"internal_id":"154","labels":["1962"],"normalizedLabels":["1962"]},{"internal_id":"155","labels":["Pelican"],"normalizedLabels":["Pelican"]},{"internal_id":"156","labels":["1963"],"normalizedLabels":["1963"]},{"internal_id":"157","labels":["Shotput"],"normalizedLabels":["Shotput"]},{"internal_id":"158","labels":["Elgin Tie"],"normalizedLabels":["Elgin Tie"]},{"internal_id":"159","labels":["Spring Training"],"normalizedLabels":["Spring Training"]},{"internal_id":"160","labels":["Map Room I"],"normalizedLabels":["Map Room I"]},{"internal_id":"161","labels":["Map Room II"],"normalizedLabels":["Map Room II"]},{"internal_id":"162","labels":["1966"],"normalizedLabels":["1966"]},{"internal_id":"163","labels":["Open Score"],"normalizedLabels":["Open Score"]},{"internal_id":"164","labels":["9 Evenings"],"normalizedLabels":["9 Evenings"]},{"internal_id":"165","labels":["Robby Robinson","Robby's"],"normalizedLabels":["Robby Robinson"]},{"internal_id":"166","labels":["Atlantic City"],"normalizedLabels":["Atlantic City"]},{"internal_id":"167","labels":["Bebek"],"normalizedLabels":["Bebek"]},{"internal_id":"168","labels":["Turkey"],"normalizedLabels":["Turkey"]},{"internal_id":"169","labels":["Manfred Schroeder","Manfred"],"normalizedLabels":["Manfred Schroeder"]},{"internal_id":"170","labels":["Bell's Acoustics, Speech and Mechanics Research Laboratory"],"normalizedLabels":["Bell Labs Acoustics, Speech and Mechanics Research Laboratory"]},{"internal_id":"171","labels":["Tony Trozzolo","Tony"],"normalizedLabels":["Tony Trozzolo"]},{"internal_id":"172","labels":["Chicago"],"normalizedLabels":["Chicago"]},{"internal_id":"173","labels":["October 7th"],"normalizedLabels":["October 7"]},{"internal_id":"174","labels":["Martin Wazowicz","Marty"],"normalizedLabels":["Martin Wazowicz"]},{"internal_id":"175","labels":["Pennsylvania"],"normalizedLabels":["Pennsylvania"]},{"internal_id":"176","labels":["Robert Whitman"],"normalizedLabels":["Robert Whitman"]},{"internal_id":"177","labels":["Martinique Theater"],"normalizedLabels":["Martinique Theater"]},{"internal_id":"178","labels":["Circle in the Square"],"normalizedLabels":["Circle in the Square"]},{"internal_id":"179","labels":["Manhattan Project"],"normalizedLabels":["Manhattan Project"]},{"internal_id":"180","labels":["Bell Labs' Polymer Research and Development Department"],"normalizedLabels":["Bell Labs Polymer Research and Development Department"]},{"internal_id":"181","labels":["Witt Wittnebert","Witt"],"normalizedLabels":["Witt Wittnebert"]},{"internal_id":"182","labels":["Rahway"],"normalizedLabels":["Rahway"]},{"internal_id":"183","labels":["Billy Kluver"],"normalizedLabels":["Billy Kluver"]},{"internal_id":"184","labels":["Dick Wolff","Dick"],"normalizedLabels":["Dick Wolff"]}]}
+      let response = null;
+      try{
+        response = await asyncEmit('ask_llm_normalize_labels', prompt);
+      }catch (error) {
+        console.error("Error normalizing labels:", error);
+        alert("There was an error normalizing the labels, please try again.");
+        return;
+      }
+      
+      if (!response || !response.success || !response.response) {
+        console.error("Error normalizing labels:", response.error);
+        alert("There was an error normalizing the labels, please try again.");
+        return;
+      }
 
       this.statusLabelNormalize = false;
 
@@ -1688,16 +2383,57 @@ export default {
                       <span class="tag is-success matched-tag">Matched</span>
 
                       <div class="hint--top hint--large" :aria-label="entity.wikiBaseReason">
-                        <img v-if="entity.thumbnail" :src="entity.thumbnail" alt="Thumbnail" class="thumbnail-semlab" />
-
-
-                        <a  :href="'https://base.semlab.io/wiki/Item:' + entity.qid" target="_blank">{{ entity.labelSemlab }}</a>
-                        <span class="lite-text">({{ entity.wikiBaseDescription }})[{{ entity.wikiBaseConfidence }}%]</span>
-                        <!-- <font-awesome-icon class="match-info" :aria-label="entity.wikiReason"  :icon="['fas', 'circle-info']" /> -->
+                        <div class="semlab-match-container">
+                          <img v-if="entity.thumbnail" :src="entity.thumbnail" alt="Thumbnail" class="thumbnail-semlab" />
+                          <div class="semlab-text-content">
+                            <a  :href="'https://base.semlab.io/wiki/Item:' + entity.qid" target="_blank">{{ entity.labelSemlab }}</a>
+                            <span class="lite-text">({{ entity.wikiBaseDescription }})[{{ entity.wikiBaseConfidence }}%]</span>
+                          </div>
+                          <font-awesome-icon 
+                            class="remove-semlab-icon" 
+                            :icon="['fas', 'times']" 
+                            @click="removeSemlabQid(entity)"
+                            title="Remove SemLab match"
+                          />
+                        </div>
 
                       </div>
                     </template>
 
+                    <template v-if="!entity.qid && !entity.wikiBaseCheckedStatus">
+                      <div class="semlab-autocomplete" :class="`semlab-autocomplete-${entity.internal_id}`">
+                        <input 
+                          type="text" 
+                          class="input is-small wikidata-search-input"
+                          :placeholder="'Search SemLab for ' + (entity.useLabel || entity.entity)"
+                          v-model="semlabSearchQueries[entity.internal_id]"
+                          @input="searchSemlab(entity.internal_id, $event.target.value)"
+                          @keydown="handleSemlabKeydown($event, entity)"
+                          @focus="handleSemlabFocus(entity)"
+                          @blur="clearSemlabSearch(entity.internal_id)"
+                        />
+                        <div v-if="semlabSearchLoading[entity.internal_id]" class="dropdown-content is-active">
+                          <div class="dropdown-item">Loading...</div>
+                        </div>
+                        <div v-else-if="semlabSearchResults[entity.internal_id] && semlabSearchResults[entity.internal_id].length > 0" class="dropdown-content is-active">
+                          <a 
+                            v-for="(item, index) in semlabSearchResults[entity.internal_id]" 
+                            :key="item.id"
+                            class="dropdown-item"
+                            :class="{ 'is-active': semlabSelectedIndex[entity.internal_id] === index }"
+                            @mousedown.prevent="selectSemlabItem(entity, item)"
+                            @mouseenter="semlabSelectedIndex[entity.internal_id] = index"
+                          >
+                            <div class="autocomplete-item-content">
+                              <div class="autocomplete-item-text">
+                                <strong>{{ item.label }}</strong>
+                                <div v-if="item.description" class="lite-text" style="font-size: 0.85em; margin-top: 2px;">{{ item.description }}</div>
+                              </div>
+                            </div>
+                          </a>
+                        </div>
+                      </div>
+                    </template>
 
 
                   </td>
@@ -1708,24 +2444,38 @@ export default {
                       <span class="tag is-success matched-tag">Matched</span>
 
                       <div class="hint--top hint--large" :aria-label="entity.wikiBaseReason">
-                        <img v-if="entity.thumbnail" :src="entity.thumbnail" alt="Thumbnail" class="thumbnail-semlab" />
-
-
-                        <a  :href="'https://base.semlab.io/wiki/Item:' + entity.qid" target="_blank">{{ entity.labelSemlab }}</a>
-                        <span class="lite-text">[{{ entity.wikiBaseConfidence }}%]</span>
-                        <!-- <font-awesome-icon class="match-info" :aria-label="entity.wikiReason"  :icon="['fas', 'circle-info']" /> -->
+                        <div class="semlab-match-container">
+                          <img v-if="entity.thumbnail" :src="entity.thumbnail" alt="Thumbnail" class="thumbnail-semlab" />
+                          <div class="semlab-text-content">
+                            <a  :href="'https://base.semlab.io/wiki/Item:' + entity.qid" target="_blank">{{ entity.labelSemlab }}</a>
+                            <span class="lite-text">[{{ entity.wikiBaseConfidence }}%]</span>
+                          </div>
+                          <font-awesome-icon 
+                            class="remove-semlab-icon" 
+                            :icon="['fas', 'times']" 
+                            @click="removeSemlabQid(entity)"
+                            title="Remove SemLab match"
+                          />
+                        </div>
 
                       </div>
 
                     
                     </template>
                     <template v-else>
-                    <a :href="'https://base.semlab.io/wiki/Item:' + entity.qid" target="_blank" class="thumbnail-semlab-link">
-                      <img v-if="entity.thumbnail" :src="entity.thumbnail" alt="Thumbnail" class="thumbnail-semlab" />
-                      <span v-if="entity.labelSemlab" class="thumbnail-label">{{ entity.labelSemlab }}</span>
-
-                      <span v-else>{{ entity.qid }}</span>
-                    </a>
+                    <div class="semlab-match-container">
+                      <a :href="'https://base.semlab.io/wiki/Item:' + entity.qid" target="_blank" class="">
+                        <img v-if="entity.thumbnail" :src="entity.thumbnail" alt="Thumbnail" class="thumbnail-semlab" />
+                        <span v-if="entity.labelSemlab" class="thumbnail-label">{{ entity.labelSemlab }}</span>
+                        <span v-else>{{ entity.qid }}</span>
+                      </a>
+                      <font-awesome-icon 
+                        class="remove-semlab-icon" 
+                        :icon="['fas', 'times']" 
+                        @click="removeSemlabQid(entity)"
+                        title="Remove SemLab match"
+                      />
+                    </div>
                     </template>
 
                   </td>
@@ -1747,33 +2497,125 @@ export default {
                       <span class="tag is-success matched-tag">Matched</span>
                       
                       <div class="hint--top hint--large" :aria-label="entity.wikiReason">
-                        <img v-if="entity.wikiThumbnail" :src="entity.wikiThumbnail" alt="Thumbnail" class="thumbnail-wikidata" />
 
 
-                        <a  :href="'https://www.wikidata.org/wiki/' + entity.wikiQid" target="_blank">{{ entity.wikiLabel }}</a>
-                        <span class="lite-text">({{ entity.wikiDescription }})[{{ entity.wikiConfidence }}%]</span>
-                        <!-- <font-awesome-icon class="match-info" :aria-label="entity.wikiReason"  :icon="['fas', 'circle-info']" /> -->
-                        <span>
-                          
-                        </span>
+                        <div class="wikidata-match-container">
+
+
+                          <a  :href="'https://www.wikidata.org/wiki/' + entity.wikiQid" target="_blank">
+                                                    <img v-if="entity.wikiThumbnail" :src="entity.wikiThumbnail" alt="Thumbnail" class="thumbnail-wikidata" />
+
+                            {{ entity.wikiLabel }}
+                          </a>
+                          <span class="lite-text">({{ entity.wikiDescription }})[{{ entity.wikiConfidence }}%]</span>
+                          <font-awesome-icon 
+                            class="remove-wikidata-icon" 
+                            :icon="['fas', 'times']" 
+                            @click="removeWikidataQid(entity)"
+                            title="Remove Wikidata match"
+                          />
+                        </div>
 
                       </div>
                     </template>
-                    <template v-else="entity.wikiQid">
+                    <template v-else-if="entity.wikiQid">
+                     
                       
-                      <div>
-                        <img v-if="entity.wikiThumbnail" :src="entity.wikiThumbnail" alt="Thumbnail" class="thumbnail-wikidata" />
+                      <div class="wikidata-match-container">
+                        <div class="wikidata-text-content">
+                          <a  :href="'https://www.wikidata.org/wiki/' + entity.wikiQid" target="_blank">
+                                                    <img v-if="entity.wikiThumbnail" :src="entity.wikiThumbnail" alt="Thumbnail" class="thumbnail-wikidata" />
 
+                            {{ entity.wikiLabel }}</a>
+                          <span class="lite-text" v-if="entity.wikiDescription">({{ entity.wikiDescription }})</span>
+                        <font-awesome-icon 
+                          class="remove-wikidata-icon" 
+                          :icon="['fas', 'times']" 
+                          @click="removeWikidataQid(entity)"
+                          title="Remove Wikidata match"
+                        />                          
+                        </div>
 
-                        <a  :href="'https://www.wikidata.org/wiki/' + entity.wikiQid" target="_blank">{{ entity.wikiLabel }}</a>
-                        <span class="lite-text" v-if="entity.wikiDescription">({{ entity.wikiDescription }})</span>
                       </div>
-                    </template>                    
+                    </template>      
+
+                    <template v-if="entity.badMatches && entity.badMatches.length > 0">
+                      <div v-for="(match, index) in entity.badMatches" :key="index">
+                        <span 
+                          class="tag is-danger hint--top hint--large clickable-bad-match" 
+                          :aria-label="match.reason"
+                          @click="selectBadMatch(entity, match)"
+                        >
+                          {{ match.label }}
+                        </span>
+                        <span class="lite-text">
+                          ({{ truncateDescription(match.description, entity.internal_id, index) }})
+                          <span 
+                            v-if="match.description && match.description.split(' ').length > 5"
+                            class="expand-description"
+                            @click="toggleDescription(entity.internal_id, index)"
+                          >
+                            {{ expandedDescriptions[`${entity.internal_id}_${index}`] ? ' [less]' : ' [more]' }}
+                          </span>
+                        </span>
+                      </div>
+                      <div style="margin-top: 0.5em;">
+                        <span 
+                          class="tag is-light clickable-none-option"
+                          @click="clearBadMatches(entity)"
+                        >
+                          None of these
+                        </span>
+                      </div>
+                    </template>
+
+                    <template v-if="!entity.wikiQid && (!entity.badMatches)">
+                      <div class="wikidata-autocomplete" :class="`wikidata-autocomplete-${entity.internal_id}`">
+                        <input 
+                          type="text" 
+                          class="input is-small wikidata-search-input"
+                          :placeholder="'Search Wikidata for ' + (entity.useLabel || entity.entity)"
+                          v-model="wikidataSearchQueries[entity.internal_id]"
+                          @input="searchWikidata(entity.internal_id, $event.target.value)"
+                          @keydown="handleWikidataKeydown($event, entity)"
+                          @focus="handleWikidataFocus(entity)"
+                          @blur="clearWikidataSearch(entity.internal_id)"
+                        />
+                        <div v-if="wikidataSearchLoading[entity.internal_id]" class="dropdown-content is-active">
+                          <div class="dropdown-item">Loading...</div>
+                        </div>
+                        <div v-else-if="wikidataSearchResults[entity.internal_id] && wikidataSearchResults[entity.internal_id].length > 0" class="dropdown-content is-active">
+                          <a 
+                            v-for="(item, index) in wikidataSearchResults[entity.internal_id]" 
+                            :key="item.id"
+                            class="dropdown-item"
+                            :class="{ 'is-active': wikidataSelectedIndex[entity.internal_id] === index }"
+                            @mousedown.prevent="selectWikidataItem(entity, item)"
+                            @mouseenter="wikidataSelectedIndex[entity.internal_id] = index"
+                          >
+                            <div class="autocomplete-item-content">
+                              <img 
+                                v-if="item.image" 
+                                :src="item.image" 
+                                alt="Wikidata image"
+                                class="autocomplete-item-image"
+                                @error="$event.target.style.display='none'"
+                              />
+                              <div class="autocomplete-item-text">
+                                <strong>{{ item.label }}</strong>
+                                <div v-if="item.description" class="lite-text" style="font-size: 0.85em; margin-top: 2px;">{{ item.description }}</div>
+                              </div>
+                            </div>
+                          </a>
+                        </div>
+                      </div>
+                    </template>
+
 
                   </td>
                   <td>{{ entity.blocks.join(', ') }}</td>
                   <td>
-                    <button class="button" @click="details(entity)">Details</button>
+                    <button class="button" @click="details(entity)">{{ activeEntity && activeEntity.internal_id === entity.internal_id ? 'Hide' : 'Details' }}</button>
                   </td>
                   <td>
                     <button class="button" @click="runSemlab(entity)">SemLab</button>
@@ -1781,7 +2623,7 @@ export default {
 
                   </td>
                 </tr>
-                <tr v-if="activeEntity.internal_id == entity.internal_id">
+                <tr v-if="activeEntity && activeEntity.internal_id == entity.internal_id">
                   <td colspan="6">
                     <div class="a-diff">
                       <h3 class="title is-4">{{ entity.entity }}</h3>
@@ -1905,6 +2747,7 @@ export default {
   width: 50px;
   height: 50px;
   vertical-align: middle;
+  object-fit: cover;
   aspect-ratio: 1;
 clip-path: polygon(20% 0%, 80% 0%, 100% 20%, 100% 80%, 80% 100%, 20% 100%, 0% 80%, 0% 20%);
 
@@ -1968,7 +2811,9 @@ clip-path: polygon(20% 0%, 80% 0%, 100% 20%, 100% 80%, 80% 100%, 20% 100%, 0% 80
 }
 
 
-
+.wikidata-search-input{
+  max-width: 200px;
+}
 
 
 textarea {
@@ -2048,6 +2893,70 @@ label{
   .etype-list a, .lite-text{
     color: #f5f5f5 !important;
   }
+  .clickable-none-option {
+    background-color: #4a4a4a !important;
+    color: #f5f5f5 !important;
+  }
+  .clickable-none-option:hover {
+    background-color: #6c757d !important;
+    color: white !important;
+  }
+  
+  .wikidata-autocomplete .dropdown-content,
+  .semlab-autocomplete .dropdown-content {
+    background: #2c2c2c;
+    border-color: #4a4a4a;
+  }
+  
+  .wikidata-autocomplete .dropdown-item,
+  .semlab-autocomplete .dropdown-item {
+    color: #f5f5f5;
+    border-bottom-color: #3a3a3a;
+  }
+  
+  .wikidata-autocomplete .dropdown-item:hover,
+  .wikidata-autocomplete .dropdown-item.is-active,
+  .semlab-autocomplete .dropdown-item:hover,
+  .semlab-autocomplete .dropdown-item.is-active {
+    background-color: #0056b3;
+    color: white;
+  }
+  
+  .wikidata-autocomplete .dropdown-item:hover .lite-text,
+  .wikidata-autocomplete .dropdown-item.is-active .lite-text,
+  .semlab-autocomplete .dropdown-item:hover .lite-text,
+  .semlab-autocomplete .dropdown-item.is-active .lite-text {
+    color: rgba(255, 255, 255, 0.8) !important;
+  }
+  
+  .wikidata-autocomplete .dropdown-item strong,
+  .semlab-autocomplete .dropdown-item strong {
+    color: #f5f5f5;
+  }
+  
+  .wikidata-autocomplete .dropdown-item .lite-text,
+  .semlab-autocomplete .dropdown-item .lite-text {
+    color: #b0b0b0 !important;
+  }
+  
+  .wikidata-autocomplete .input,
+  .semlab-autocomplete .input {
+    background-color: #3a3a3a;
+    color: #f5f5f5;
+    border-color: #4a4a4a;
+  }
+  
+  .autocomplete-item-image {
+    background-color: #3a3a3a;
+  }
+  
+  .remove-wikidata-icon, .remove-semlab-icon {
+    color: #ff6b6b;
+  }
+  
+  .remove-wikidata-icon:hover, .remove-semlab-icon:hover {
+    color: #ff5252;
+  }
 }
 
 @keyframes spin {
@@ -2090,6 +2999,159 @@ label{
 
 .warning {
   animation: fadeWarning 2.5s ease-in-out infinite; /* Adjust duration as needed */
+}
+
+.clickable-bad-match {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.clickable-bad-match:hover {
+  background-color: #dc3545 !important;
+  transform: scale(1.05);
+}
+
+.expand-description {
+  cursor: pointer;
+  color: #007bff;
+  text-decoration: underline;
+  font-size: 0.9em;
+}
+
+.expand-description:hover {
+  color: #0056b3;
+}
+
+.clickable-none-option {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.clickable-none-option:hover {
+  background-color: #6c757d !important;
+  color: white !important;
+  transform: scale(1.05);
+}
+
+.wikidata-autocomplete,
+.semlab-autocomplete {
+  position: relative;
+  width: 100%;
+}
+
+.wikidata-autocomplete .input,
+.semlab-autocomplete .input {
+  width: 100%;
+}
+
+.wikidata-autocomplete .dropdown-content,
+.semlab-autocomplete .dropdown-content {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: white;
+  border: 1px solid #dbdbdb;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  max-height: 200px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-top: 2px;
+}
+
+.wikidata-autocomplete .dropdown-item,
+.semlab-autocomplete .dropdown-item {
+  padding: 0.75rem;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: #363636;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.wikidata-autocomplete .dropdown-item:last-child,
+.semlab-autocomplete .dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.wikidata-autocomplete .dropdown-item:hover,
+.wikidata-autocomplete .dropdown-item.is-active,
+.semlab-autocomplete .dropdown-item:hover,
+.semlab-autocomplete .dropdown-item.is-active {
+  background-color: #007bff;
+  color: white;
+}
+
+.wikidata-autocomplete .dropdown-item:hover .lite-text,
+.wikidata-autocomplete .dropdown-item.is-active .lite-text,
+.semlab-autocomplete .dropdown-item:hover .lite-text,
+.semlab-autocomplete .dropdown-item.is-active .lite-text {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+
+.wikidata-autocomplete .dropdown-item strong,
+.semlab-autocomplete .dropdown-item strong {
+  display: block;
+  margin-bottom: 2px;
+  color: #363636;
+}
+
+.autocomplete-item-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.autocomplete-item-image {
+  width: 40px;
+  height: 40px;
+  max-width: 40px;
+  max-height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background-color: #f5f5f5;
+}
+
+.autocomplete-item-text {
+  flex: 1;
+  min-width: 0; /* Allow text to shrink */
+}
+
+.wikidata-match-container, .semlab-match-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.wikidata-text-content, .semlab-text-content {
+  flex: 1;
+}
+
+.remove-wikidata-icon, .remove-semlab-icon {
+  opacity: 0;
+  color: #dc3545;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+  font-size: 1.25em;
+  vertical-align: middle;
+  padding-left: 0.25em;
+}
+
+.wikidata-match-container:hover .remove-wikidata-icon,
+.semlab-match-container:hover .remove-semlab-icon {
+  opacity: 1;
+}
+
+.remove-wikidata-icon:hover, .remove-semlab-icon:hover {
+  color: #c82333;
+  transform: scale(1.2);
 }
 
 .judgement-text{
