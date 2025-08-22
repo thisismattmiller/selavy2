@@ -62,15 +62,17 @@ except requests.exceptions.RequestException as e:
     sys.exit(1)
 
 classes =[]
+class_map = {}
 
 try:
     for result in data['results']['bindings']:
         qid = result['item']['value'].split("/")[-1]
         label = result['itemLabel']['value']
 
-        if label not in ['class', 'item', 'thing']:
+        if label not in ['class', 'item', 'thing', 'artwork (structural class)', 'reason for uncertainty', 'property']:
 
             classes.append(label)
+            class_map[label] = qid
 except:
     print(f"An error occurred while making the SPARQL request: {e}",flush=True)
 
@@ -182,6 +184,8 @@ job_data["status"] = "LLM_MARKUP_COMPLETE",
 job_data['text_markup'] = response_text
 job_data['status_percent'] = "(100%)"
 job_data['last_percent_done'] = last_percent_done
+job_data['class_map'] = class_map
+
 json.dump(job_data,open(f'/data/jobs/{user_name}/' + jobs_id + '.json','w'),indent=2)
 
 

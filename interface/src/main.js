@@ -14,11 +14,11 @@ import { library } from '@fortawesome/fontawesome-svg-core'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 
 /* import specific icons */
-import { faUserSecret, faSquareBinary, faFileCirclePlus, faSpinner, faThumbsUp, faHourglassHalf, faTriangleExclamation, faArrowLeft, faCircle, faCircleCheck, faShapes, faDatabase, faCircleInfo, faCirclePause,faCirclePlay, faPencil, faTrash, faChevronUp, faChevronDown, faTimes} from '@fortawesome/free-solid-svg-icons'
+import { faUserSecret, faSquareBinary, faFileCirclePlus, faSpinner, faThumbsUp, faHourglassHalf, faTriangleExclamation, faArrowLeft, faCircle, faCircleCheck, faShapes, faDatabase, faCircleInfo, faCirclePause,faCirclePlay, faPencil, faTrash, faChevronUp, faChevronDown, faTimes, faEye, faEyeSlash, faArrowDown, faCircleNodes, faBurst, faPlus} from '@fortawesome/free-solid-svg-icons'
 
 
 /* add icons to the library */
-library.add([faUserSecret,faSquareBinary,faFileCirclePlus, faSpinner, faThumbsUp, faHourglassHalf, faTriangleExclamation, faArrowLeft, faCircle, faCircleCheck, faShapes, faDatabase, faCircleInfo, faCirclePause,faCirclePlay, faPencil, faTrash, faChevronUp, faChevronDown, faTimes])
+library.add([faUserSecret,faSquareBinary,faFileCirclePlus, faSpinner, faThumbsUp, faHourglassHalf, faTriangleExclamation, faArrowLeft, faCircle, faCircleCheck, faShapes, faDatabase, faCircleInfo, faCirclePause,faCirclePlay, faPencil, faTrash, faChevronUp, faChevronDown, faTimes, faEye, faEyeSlash, faArrowDown, faCircleNodes, faBurst, faPlus])
 
 
 

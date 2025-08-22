@@ -198,6 +198,13 @@ def handle_get_ner(job_data):
             job_data = json.load(f)
             ner = return_ner(job_data['text_markup'])
 
+            if 'entities' in job_data:
+                ner['entities'] = job_data['entities']
+
+
+            if 'class_map' in job_data:
+                ner['class_map'] = job_data['class_map']
+
             return {'success': True, 'error': None, 'ner': ner }
     else:
         return {'success': False, 'error': 'Doc not found'}
@@ -375,7 +382,11 @@ def handle_jobs_list(data):
         
 
     
-    my_jobs = sorted(my_jobs, key=lambda x: x['order'])
+    # Sort jobs: order=0 at top, then order=1 sorted by created_at (newest first)
+    my_jobs = sorted(my_jobs, key=lambda x: (
+        x['order'],  # First sort by order (0 comes before 1)
+        -1 * int(x['created_at'].replace('-', '').replace(' ', '').replace(':', '')) if x['order'] == 1 and 'created_at' in x else 0  # For order=1, sort by created_at descending (newest first)
+    ))
 
     return {'success': True, 'jobs': my_jobs }
 
@@ -413,6 +424,7 @@ def handle_ask_llm(data):
 def handle_ask_llm_normalize_labels(prompt):
     response = ask_llm_normalize_labels(prompt)
     return response
+
 
 @socketio.on('ask_llm_reconcile_build_search_order')
 def handle_ask_llm_reconcile_build_search_order(prompt):
@@ -474,6 +486,26 @@ def handle_delete_job(job_id):
         
     except Exception as e:
         return {'success': False, 'error': str(e)}
+
+
+@socketio.on('save_ner_entities')
+def handle_save_ner_entities(data):
+
+    # print(data['user'], data['job_id'], data['entities'], flush=True)
+    data_file = f'/data/jobs/{data['user'].lower()}/{data["job_id"]}.json'
+
+    if os.path.exists(data_file):
+        with open(data_file) as f:
+            existing_data = json.load(f)
+            existing_data['entities'] = data['entities']
+            with open(data_file, 'w') as f:
+                json.dump(existing_data, f)
+    else:
+        return {'success': False, 'error': "Job not found"}
+
+
+    return {'success': True, 'error': None}
+
 
 @socketio.on('search_semlab_autocomplete')
 def handle_search_semlab_autocomplete(search_term):

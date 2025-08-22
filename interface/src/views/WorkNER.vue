@@ -5,6 +5,8 @@ import LoginModal from '@/components/LoginModal.vue'
 import { mapWritableState } from "pinia";
 import JobStatus from '@/components/JobStatus.vue'
 
+import MD5 from 'crypto-js/md5';
+
 
 function asyncEmit(eventName, data) {
   return new Promise(function (resolve, reject) {
@@ -40,6 +42,11 @@ export default {
       judgeStatus: null,
       workflowComplete: false,
 
+      typeMap: {},  // holds the string -> qid mapping for class/type from the backend
+      typeAlignment: {},  // the alignment to the current list of types
+      editingType: null,  // tracks which type is currently being edited
+      autoSave: true,  // auto-save entities when they change
+
       semlabClasses: [],
 
       showMoreBlocks: {}, // used to track which entities have "show more blocks" expanded
@@ -73,6 +80,11 @@ export default {
       statusClassReconcile: null,
 
       statusLabelNormalize:null,
+      normalizingType: null, // tracks which type is currently being normalized
+      isSavingEntities: false,
+      entitiesHaveChanges: false,
+      activeTab: 'reconcile', // tracks the active tab: 'reconcile', 'mint', or 'data'
+      defaultProject: null, // stores the selected default project for minting
 
 
       workQueue1: false,
@@ -95,6 +107,55 @@ export default {
    
    //  ...mapStores(useUserStore),
     ...mapWritableState(useUserStore, ['isAuthenticated', 'user']),
+    
+    // Filter entities for mint table - only show entities with wikiQid but no qid, or minted=true
+    entitiesByTypeForMint() {
+      const filtered = {};
+      
+      for (const type in this.entitiesByType) {
+        const mintEntities = this.entitiesByType[type].filter(entity => {
+          // Include if: has wikiQid but no qid, OR has minted flag set to true
+          return (entity.wikiQid && !entity.qid) || entity.minted === true;
+        }).map(entity => {
+          // Create a copy of the entity with mintData
+          const entityCopy = { ...entity };
+          
+          // Get unique variant labels
+          const variantLabels = new Set();
+          if (entity.labels && Array.isArray(entity.labels)) {
+            entity.labels.forEach(label => variantLabels.add(label));
+          }
+          if (entity.normalizedLabel) {
+            variantLabels.add(entity.normalizedLabel);
+          }
+          if (entity.useLabel) {
+            variantLabels.add(entity.useLabel);
+          }
+          
+          // Get the instanceOf QID from typeMap based on entity's type
+          const instanceOfQid = entity.type ? this.typeMap[entity.type.toLowerCase()] : null;
+          
+          // Initialize mintData with values from entity
+          entityCopy.mintData = {
+            authLabel: entity.wikiLabel || entity.entity || '',
+            description: entity.wikiDescription || '',
+            variantLabel: Array.from(variantLabels),
+            project: this.defaultProject ? [this.defaultProject] : [],
+            instanceOf: instanceOfQid ? [instanceOfQid] : [],
+            wikidataQid: entity.wikiQid || ''
+          };
+          
+          return entityCopy;
+        });
+        
+        // Only include type if it has matching entities
+        if (mintEntities.length > 0) {
+          filtered[type] = mintEntities;
+        }
+      }
+      
+      return filtered;
+    }
  
  
    },
@@ -103,12 +164,24 @@ export default {
     // don't intialize until we have a user
     user(newUser, oldUser) {
       this.initialize()
+    },
+    entities: {
+      deep: true,
+      handler(newVal, oldVal) {
+        if (oldVal && Object.keys(oldVal).length > 0) {
+          this.entitiesHaveChanges = true;
+          if (this.autoSave) {
+            this.sendFilteredEntities();
+          }
+        }
+      }
     }
   },
    
    
   methods: {
     // Add methods here
+
     async initialize() {
 
      
@@ -120,6 +193,15 @@ export default {
           // populate the lookup tables by type
           this.blocks = response.ner.blocks
           this.entities = response.ner.entities
+          this.typeMap = response.ner.class_map
+          
+          // Initialize hidden property for each entity
+          for (let id in this.entities) {
+            if (this.entities[id].hidden === undefined) {
+              this.entities[id].hidden = false;
+            }
+          }
+
           // console.log("this.entities", this.entities)
 
           this.buildEntitesByType()
@@ -138,6 +220,9 @@ export default {
 
     editEntityLabel(entity) {
       // console.log("editEntityLabel", entity)
+      if (entity.hidden){
+        return false
+      }
       entity.editing = entity.entity;
       this.$nextTick(() => {
         const input = document.getElementById('label-select-' + entity.internal_id + '-entity');
@@ -167,6 +252,8 @@ export default {
     },
 
     async retriveWikidataEntity(entity){
+
+      this.findSemlabEntityByWikiQid(entity)
 
       try {
 
@@ -207,7 +294,8 @@ export default {
               entity.wikiDescription = binding.entityDescription.value;
             }
             if (binding.image && binding.image.value && binding.image.value.startsWith('http')) {
-              entity.wikiThumbnail = binding.image.value;
+              entity.wikiThumbnailOrg = binding.image.value
+              entity.wikiThumbnail = this.convertToThumbnail(binding.image.value)
             }
             break // only process the first binding
 
@@ -231,7 +319,8 @@ export default {
         if (entity.wikiThumbnail){
           for (let e in this.entities){
             if (this.entities[e].internal_id == entity.internal_id){
-              this.entities[e].wikiThumbnail = entity.wikiThumbnail;
+              this.entities[e].wikiThumbnail = this.convertToThumbnail(entity.wikiThumbnail);
+              this.entities[e].wikiThumbnailOrg = entity.wikiThumbnailOrg;
             }
           }
         }
@@ -294,6 +383,276 @@ export default {
       }else{
         clearInterval(this.baseWorkQueueTimer)
         this.baseWorkQueueTimer = null
+      }
+    },
+    
+    startEditingType(type) {
+      this.editingType = type;
+      this.$nextTick(() => {
+        const select = document.querySelector('.type-alignment-select');
+        if (select) {
+          select.focus();
+        }
+      });
+    },
+    
+    stopEditingType() {
+      this.editingType = null;
+    },
+    
+    getTypeStringFromQid(qid) {
+      for (let [typeString, typeQid] of Object.entries(this.typeMap)) {
+        if (typeQid === qid) {
+          return typeString;
+        }
+      }
+      return qid; // Return the QID if no match found
+    },
+    
+    removeFromArray(array, index) {
+      array.splice(index, 1);
+    },
+    
+    decodeHtmlEntities(text) {
+      if (!text) return text;
+      const textarea = document.createElement('textarea');
+      textarea.innerHTML = text;
+      text = textarea.value;
+      text = text.replace(/&amp;/g, '&'); // Decode &amp; to &
+      text = text.replace(/&lt;/g, '<'); // Decode &lt; to <
+      text = text.replace(/&gt;/g, '>'); // Decode &gt; to >
+      text = text.replace(/&quot;/g, '"'); // Decode &quot; to "
+      text = text.replace(/&#39;/g, "'"); // Decode &#39; to '
+      
+      return textarea.value;
+    },
+    
+    toggleEntityVisibility(entity) {
+      // Toggle the hidden property directly on the entity
+      entity.hidden = !entity.hidden;
+    },
+    
+    async processAllEntitiesWikidata(type) {
+      const entities = this.entitiesByType[type];
+      if (!entities || entities.length === 0) {
+        console.log(`No entities found for type: ${type}`);
+        return;
+      }
+      
+      console.log(`Processing ${entities.length} entities of type ${type} through Wikidata`);
+      
+      for (let i = 0; i < entities.length; i++) {
+        const entity = entities[i];
+        console.log(`Processing entity ${i + 1}/${entities.length}: ${entity.entity}`);
+        
+        // Process the entity through Wikidata
+        await this.workEntity(entity.internal_id, true);
+        
+        // Add a small delay to avoid overwhelming the API
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      console.log(`Completed processing all ${type} entities through Wikidata`);
+    },
+    
+    async processAllEntitiesSemlab(type) {
+      const entities = this.entitiesByType[type];
+      if (!entities || entities.length === 0) {
+        console.log(`No entities found for type: ${type}`);
+        return;
+      }
+      
+      console.log(`Processing ${entities.length} entities of type ${type} through SemLab`);
+      
+      for (let i = 0; i < entities.length; i++) {
+        const entity = entities[i];
+        console.log(`Processing entity ${i + 1}/${entities.length}: ${entity.entity}`);
+        
+        // Process the entity through SemLab
+        await this.workBaseEntity(entity.internal_id, true);
+        
+        // Add a small delay to avoid overwhelming the API
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      console.log(`Completed processing all ${type} entities through SemLab`);
+    },
+    
+    async normalizeLabelsByType(type) {
+      const entities = this.entitiesByType[type];
+      if (!entities || entities.length === 0) {
+        console.log(`No entities found for type: ${type}`);
+        return;
+      }
+      
+      // Set the loading state for this type
+      this.normalizingType = type;
+      
+      const BATCH_SIZE = 10;
+      
+      // Prepare entities data for normalization - need to find the key in this.entities
+      let typeEntities = [];
+      for (let entity of entities) {
+        // Find the key in this.entities that matches this entity
+        let entityKey = null;
+        for (let eId in this.entities) {
+          if (this.entities[eId].internal_id === entity.internal_id) {
+            entityKey = eId;
+            break;
+          }
+        }
+        
+        if (entityKey) {
+          typeEntities.push({
+            internal_id: entity.internal_id,
+            labels: entity.labels,
+            normalizedLabels: [],
+            entityId: entityKey
+          });
+        }
+      }
+      
+      console.log(`Normalizing labels for ${typeEntities.length} entities of type ${type}`);
+      this.statusLabelNormalize = `Normalizing ${type} entities...`;
+      
+      const totalBatches = Math.ceil(typeEntities.length / BATCH_SIZE);
+      
+      for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+        const startIdx = batchNum * BATCH_SIZE;
+        const endIdx = Math.min(startIdx + BATCH_SIZE, typeEntities.length);
+        const batchEntities = typeEntities.slice(startIdx, endIdx);
+        
+        this.statusLabelNormalize = `Working on ${type} batch ${batchNum + 1} of ${totalBatches}`;
+        
+        // Collect blocks text for context
+        let sendBlocks = [];
+        for (let batchEntity of batchEntities) {
+          let entity = this.entities[batchEntity.entityId];
+          if (entity.blocks && entity.blocks.length > 0) {
+            if (sendBlocks.indexOf(entity.blocks[0]) == -1) {
+              sendBlocks.push(entity.blocks[0]);
+              if (entity.blocks[1]) {
+                sendBlocks.push(entity.blocks[1]);
+              }
+            }
+          } else {
+            console.warn(`Entity ${entity.internal_id} has no blocks, skipping normalization.`);
+          }
+        }
+        let allBlockText = sendBlocks.map(b => this.blocks[b].clean).join(" ");
+        
+        // Prepare the list for the LLM
+        const sendList = batchEntities.map(e => ({
+          internal_id: e.internal_id,
+          labels: e.labels,
+          normalizedLabels: []
+        }));
+        
+        let prompt = `Normalize the words in this list of objects, normalize the labels in the key "labels", if they have honorifics remove them, if they are a shortened version of the entity make it the fuller form, make the term more search friendly if you were searching Wikipedia for the term. Do not invent names or expand the word without strong evidence, if you cannot expand it return it as it is. After the JSON below is the text the names are found in, use this text to help expand the name. Return JSON Only.`
+        prompt += `\n\nJSON:\n`
+        prompt += JSON.stringify(sendList, null, 2);
+        prompt += `\n\nText:\n"${allBlockText}"\n\n`
+        console.log(`Processing ${type} batch ${batchNum + 1}/${totalBatches}:`, prompt)
+        
+        let response = null;
+        try {
+          response = await asyncEmit('ask_llm_normalize_labels', prompt);
+        } catch (error) {
+          console.error(`Error normalizing labels for ${type} batch ${batchNum + 1}:`, error);
+          alert(`There was an error normalizing the labels for ${type} batch ${batchNum + 1}, please try again.`);
+          this.statusLabelNormalize = null;
+          this.normalizingType = null;
+          return;
+        }
+        
+        if (!response || !response.success || !response.response) {
+          console.error(`Error normalizing labels for ${type} batch ${batchNum + 1}:`, response?.error);
+          alert(`There was an error normalizing the labels for ${type} batch ${batchNum + 1}, please try again.`);
+          this.statusLabelNormalize = null;
+          this.normalizingType = null;
+          return;
+        }
+        
+        // Process the response
+        for (let batchEntity of batchEntities) {
+          let entity = this.entities[batchEntity.entityId];
+          let lookForId = batchEntity.internal_id;
+          let found = response.response.find(item => item.internal_id === lookForId);
+          if (found) {
+            if (found.normalizedLabels && found.normalizedLabels.length > 0) {
+              if (found.normalizedLabels[0] && found.labels.indexOf(found.normalizedLabels[0]) == -1) {
+                console.log("Adding normalized label", found.normalizedLabels[0], "to entity", entity.internal_id, "replacing", found.labels[0]);
+                entity.normalizedLabel = found.normalizedLabels[0];
+                entity.useLabel = found.normalizedLabels[0];
+              }
+            }
+          }
+        }
+        
+        // Small delay between batches
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      
+      this.statusLabelNormalize = null;
+      this.normalizingType = null;
+      console.log(`Completed normalizing labels for ${type} entities`);
+    },
+    
+    async findSemlabEntityByWikiQid(entity) {
+      if (!entity.wikiQid) {
+        console.log('No wikiQid provided for entity');
+        return null;
+      }
+      
+      try {
+        // SPARQL query to find SemLab entity where P8 equals the Wikidata QID
+        const sparql = `
+          SELECT ?item ?itemLabel ?itemDescription WHERE {
+            ?item wdt:P8 "${entity.wikiQid}" .
+            SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+          }
+          LIMIT 1
+        `;
+        
+        const sparqlUrl = `https://query.semlab.io/proxy/wdqs/bigdata/namespace/wdq/sparql`;
+        const sparqlResponse = await fetch(sparqlUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/sparql-results+json'
+          },
+          body: `query=${encodeURIComponent(sparql)}`
+        });
+        
+        const sparqlData = await sparqlResponse.json();
+        
+        if (sparqlData.results && sparqlData.results.bindings && sparqlData.results.bindings.length > 0) {
+          const result = sparqlData.results.bindings[0];
+          
+          // Extract the QID from the full URI (e.g., http://base.semlab.io/entity/Q123 -> Q123)
+          const fullUri = result.item.value;
+          const qid = fullUri.split('/').pop();
+          
+          // Update the entity with SemLab data
+          entity.qid = qid;
+          
+          if (result.itemLabel && result.itemLabel.value) {
+            entity.labelSemlab = result.itemLabel.value;
+          }
+          
+          if (result.itemDescription && result.itemDescription.value) {
+            entity.descriptionSemlab = result.itemDescription.value;
+          }
+          
+          console.log(`Found SemLab entity ${qid} for Wikidata ${entity.wikiQid}`);
+          return entity;
+        } else {
+          console.log(`No SemLab entity found with P8=${entity.wikiQid}`);
+          return null;
+        }
+      } catch (error) {
+        console.error('Error querying SemLab SPARQL:', error);
+        return null;
       }
     },
 
@@ -372,6 +731,9 @@ export default {
 
       entity.wikiCheckedStatus = 'INITIALIZING';
 
+      delete entity.wikiNoMatch
+      delete entity.wikiNoGoodMatch
+
 
       let sortOrderPrompt = await this.buildCompareOrderPrompt(entity);
       
@@ -385,6 +747,10 @@ export default {
         newSortOrder[0].order = 1
 
         newSortOrder = {success: true, error:null, response: newSortOrder}
+
+      }else if (sortOrderPrompt.compareList && sortOrderPrompt.compareList.length == 0){
+
+        entity.wikiNoMatch = true;
 
       }else{
 
@@ -410,7 +776,13 @@ export default {
       if (newSortOrder && newSortOrder.success && newSortOrder.response && newSortOrder.response.length > 0){
 
         for (let toReconcile of newSortOrder.response){
-          
+
+          // while it was reconciling they user might selected one of them
+          if (entity.wikiQid){
+            delete entity.badMatches
+            break
+          }
+
           if (toReconcile.label.toLowerCase() == 'nomatch' || toReconcile.qid.toLowerCase() == 'nomatch') {
             entity.wikiNoMatch = true;
             continue
@@ -456,10 +828,13 @@ export default {
 
             for (let d of compareData){
               if (d.p == 'image') {
-                entity.wikiThumbnail = d.o;
+                entity.wikiThumbnail = this.convertToThumbnail(d.o);
+                entity.wikiThumbnailOrg = d.o;
                 break
               }
             }
+
+            this.findSemlabEntityByWikiQid(entity);
 
 
             delete entity.wikiCheckedStatus 
@@ -487,17 +862,31 @@ export default {
               confidence: compareResult.response.confidence,
               type: badMatchType
             });
+            
 
             console.log("No match found for entity", entity.entity, "with qid", toReconcile.qid, badMatchType, compareResult)
+
+            //if one was selected remove the badmatches
+            if(entity.wikiQid){
+              entity.badMatches = []
+            }
+
 
 
           }         
         }
       }else{
 
-        // error in the sort order request
-        entity.wikiCheckedStatus = 'ERROR';
-        entity.wikiError = true
+        if (sortOrderPrompt.compareList && sortOrderPrompt.compareList.length == 0){
+          // there is no error since there was an empty response
+        }else{
+          // error in the sort order request
+          entity.wikiCheckedStatus = 'ERROR';
+          entity.wikiError = true
+        }
+
+
+
       }
 
       if (!adHoc){
@@ -534,6 +923,8 @@ export default {
       if (!entity['llmLog']){
         entity.llmLog = []      
       }
+      delete entity.wikiBaseNoMatch
+      delete entity.wikiBaseNoGoodMatch
 
       // if (entity.entity.indexOf('Florentine art') == -1){
       //   for (let queue of [this.baseWorkQueue1, this.baseWorkQueue2, this.baseWorkQueue3]){
@@ -856,10 +1247,29 @@ export default {
         let entity = this.entities[eId]
         if (this.entitiesByType[entity.type] == undefined){
           this.entitiesByType[entity.type] = []
+
+          let foundIt = false;
+          for (let typeString of Object.keys(this.typeMap)) {
+              if (typeString.toLocaleLowerCase() == entity.type.toLocaleLowerCase()){
+                this.typeAlignment[entity.type.toLocaleLowerCase()] = this.typeMap[typeString];
+                foundIt = true;
+              }
+          }
+          if (!foundIt) {
+            this.typeAlignment[entity.type.toLocaleLowerCase()] = null; // No alignment found
+          }
         }
+
         this.entitiesByType[entity.type].push(entity)
       }
       // console.log("entitiesByType", this.entitiesByType)
+
+      // for (let typeString of Object.keys(this.typeMap)) {
+      //     if (!this.typeAlignment[typeString.toLocaleLowerCase()]) {
+      //       console.log("No alignment for", typeString);
+      //     }
+      // }
+
 
 
 
@@ -890,9 +1300,9 @@ export default {
     clearBadMatches(entity) {
       // Clear all bad matches from the entity
       delete entity.badMatches;
-      delete entity.wikiQid;
-      delete entity.wikiLabel;
-      delete entity.wikiDescription;
+      // delete entity.wikiQid;
+      // delete entity.wikiLabel;
+      // delete entity.wikiDescription;
       delete entity.wikiNoMatch;
     },
 
@@ -976,7 +1386,8 @@ export default {
       // Clear search state
       this.wikidataSearchQueries[entity.internal_id] = '';
       this.wikidataSearchResults[entity.internal_id] = [];
-      
+
+
       // Retrieve additional data
       this.retriveWikidataEntity(entity);
     },
@@ -1158,7 +1569,7 @@ export default {
         console.log('Extracted filename:', filename);
         console.log(filename.replace(/ /g, '_'))
         // Generate MD5 hash of filename using proper MD5 implementation
-        const md5Hash = this.md5(filename);
+        const md5Hash = MD5(filename).toString();
 
         
         // Build thumbnail URL according to Wikimedia rules:
@@ -1166,7 +1577,15 @@ export default {
         const firstChar = md5Hash.charAt(0);
         const firstTwoChars = md5Hash.substring(0, 2);
         
-        const thumbnailUrl = `https://upload.wikimedia.org/wikipedia/commons/thumb/${firstChar}/${firstTwoChars}/${encodeURIComponent(filename)}/${width}px-${encodeURIComponent(filename)}`;
+        let thumbnailUrl = `https://upload.wikimedia.org/wikipedia/commons/thumb/${firstChar}/${firstTwoChars}/${encodeURIComponent(filename)}/${width}px-${encodeURIComponent(filename)}`;
+
+        if (thumbnailUrl.endsWith(".tif")){
+          thumbnailUrl = thumbnailUrl +  ".jpg"
+        }
+        if (thumbnailUrl.endsWith(".svg")){
+          thumbnailUrl = thumbnailUrl +  ".png"
+        }
+        
         
         console.log('Converting image URL:', filename, 'hash:', md5Hash, '->', thumbnailUrl);
         return thumbnailUrl;
@@ -1174,158 +1593,6 @@ export default {
         console.error('Error converting to thumbnail:', error);
         return imageUrl;
       }
-    },
-
-    md5cycle(x, k) {
-      var a = x[0], b = x[1], c = x[2], d = x[3];
-
-      a = this.ff(a, b, c, d, k[0], 7, -680876936);
-      d = this.ff(d, a, b, c, k[1], 12, -389564586);
-      c = this.ff(c, d, a, b, k[2], 17,  606105819);
-      b = this.ff(b, c, d, a, k[3], 22, -1044525330);
-      a = this.ff(a, b, c, d, k[4], 7, -176418897);
-      d = this.ff(d, a, b, c, k[5], 12,  1200080426);
-      c = this.ff(c, d, a, b, k[6], 17, -1473231341);
-      b = this.ff(b, c, d, a, k[7], 22, -45705983);
-      a = this.ff(a, b, c, d, k[8], 7,  1770035416);
-      d = this.ff(d, a, b, c, k[9], 12, -1958414417);
-      c = this.ff(c, d, a, b, k[10], 17, -42063);
-      b = this.ff(b, c, d, a, k[11], 22, -1990404162);
-      a = this.ff(a, b, c, d, k[12], 7,  1804603682);
-      d = this.ff(d, a, b, c, k[13], 12, -40341101);
-      c = this.ff(c, d, a, b, k[14], 17, -1502002290);
-      b = this.ff(b, c, d, a, k[15], 22,  1236535329);
-
-      a = this.gg(a, b, c, d, k[1], 5, -165796510);
-      d = this.gg(d, a, b, c, k[6], 9, -1069501632);
-      c = this.gg(c, d, a, b, k[11], 14,  643717713);
-      b = this.gg(b, c, d, a, k[0], 20, -373897302);
-      a = this.gg(a, b, c, d, k[5], 5, -701558691);
-      d = this.gg(d, a, b, c, k[10], 9,  38016083);
-      c = this.gg(c, d, a, b, k[15], 14, -660478335);
-      b = this.gg(b, c, d, a, k[4], 20, -405537848);
-      a = this.gg(a, b, c, d, k[9], 5,  568446438);
-      d = this.gg(d, a, b, c, k[14], 9, -1019803690);
-      c = this.gg(c, d, a, b, k[3], 14, -187363961);
-      b = this.gg(b, c, d, a, k[8], 20,  1163531501);
-      a = this.gg(a, b, c, d, k[13], 5, -1444681467);
-      d = this.gg(d, a, b, c, k[2], 9, -51403784);
-      c = this.gg(c, d, a, b, k[7], 14,  1735328473);
-      b = this.gg(b, c, d, a, k[12], 20, -1926607734);
-
-      a = this.hh(a, b, c, d, k[5], 4, -378558);
-      d = this.hh(d, a, b, c, k[8], 11, -2022574463);
-      c = this.hh(c, d, a, b, k[11], 16,  1839030562);
-      b = this.hh(b, c, d, a, k[14], 23, -35309556);
-      a = this.hh(a, b, c, d, k[1], 4, -1530992060);
-      d = this.hh(d, a, b, c, k[4], 11,  1272893353);
-      c = this.hh(c, d, a, b, k[7], 16, -155497632);
-      b = this.hh(b, c, d, a, k[10], 23, -1094730640);
-      a = this.hh(a, b, c, d, k[13], 4,  681279174);
-      d = this.hh(d, a, b, c, k[0], 11, -358537222);
-      c = this.hh(c, d, a, b, k[3], 16, -722521979);
-      b = this.hh(b, c, d, a, k[6], 23,  76029189);
-      a = this.hh(a, b, c, d, k[9], 4, -640364487);
-      d = this.hh(d, a, b, c, k[12], 11, -421815835);
-      c = this.hh(c, d, a, b, k[15], 16,  530742520);
-      b = this.hh(b, c, d, a, k[2], 23, -995338651);
-
-      a = this.ii(a, b, c, d, k[0], 6, -198630844);
-      d = this.ii(d, a, b, c, k[7], 10,  1126891415);
-      c = this.ii(c, d, a, b, k[14], 15, -1416354905);
-      b = this.ii(b, c, d, a, k[5], 21, -57434055);
-      a = this.ii(a, b, c, d, k[12], 6,  1700485571);
-      d = this.ii(d, a, b, c, k[3], 10, -1894986606);
-      c = this.ii(c, d, a, b, k[10], 15, -1051523);
-      b = this.ii(b, c, d, a, k[1], 21, -2054922799);
-      a = this.ii(a, b, c, d, k[8], 6,  1873313359);
-      d = this.ii(d, a, b, c, k[15], 10, -30611744);
-      c = this.ii(c, d, a, b, k[6], 15, -1560198380);
-      b = this.ii(b, c, d, a, k[13], 21,  1309151649);
-      a = this.ii(a, b, c, d, k[4], 6, -145523070);
-      d = this.ii(d, a, b, c, k[11], 10, -1120210379);
-      c = this.ii(c, d, a, b, k[2], 15,  718787259);
-      b = this.ii(b, c, d, a, k[9], 21, -343485551);
-
-      x[0] = this.add32(a, x[0]);
-      x[1] = this.add32(b, x[1]);
-      x[2] = this.add32(c, x[2]);
-      x[3] = this.add32(d, x[3]);
-    },
-
-    cmn(q, a, b, x, s, t) {
-      a = this.add32(this.add32(a, q), this.add32(x, t));
-      return this.add32((a << s) | (a >>> (32 - s)), b);
-    },
-
-    ff(a, b, c, d, x, s, t) {
-      return this.cmn((b & c) | ((~b) & d), a, b, x, s, t);
-    },
-
-    gg(a, b, c, d, x, s, t) {
-      return this.cmn((b & d) | (c & (~d)), a, b, x, s, t);
-    },
-
-    hh(a, b, c, d, x, s, t) {
-      return this.cmn(b ^ c ^ d, a, b, x, s, t);
-    },
-
-    ii(a, b, c, d, x, s, t) {
-      return this.cmn(c ^ (b | (~d)), a, b, x, s, t);
-    },
-
-    md51(s) {
-      var n = s.length,
-      state = [1732584193, -271733879, -1732584194, 271733878], i;
-      for (i=64; i<=s.length; i+=64) {
-        this.md5cycle(state, this.md5blk(s.substring(i-64, i)));
-      }
-      s = s.substring(i-64);
-      var tail = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0];
-      for (i=0; i<s.length; i++)
-        tail[i>>2] |= s.charCodeAt(i) << ((i%4) << 3);
-      tail[i>>2] |= 0x80 << ((i%4) << 3);
-      if (i > 55) {
-        this.md5cycle(state, tail);
-        for (i=0; i<16; i++) tail[i] = 0;
-      }
-      tail[14] = n*8;
-      this.md5cycle(state, tail);
-      return state;
-    },
-
-    md5blk(s) {
-      var md5blks = [], i;
-      for (i=0; i<64; i+=4) {
-        md5blks[i>>2] = s.charCodeAt(i)
-        + (s.charCodeAt(i+1) << 8)
-        + (s.charCodeAt(i+2) << 16)
-        + (s.charCodeAt(i+3) << 24);
-      }
-      return md5blks;
-    },
-
-    rhex(n) {
-      var hex_chr = '0123456789abcdef'.split('');
-      var s='', j=0;
-      for(; j<4; j++)
-        s += hex_chr[(n >> (j * 8 + 4)) & 0x0F]
-        + hex_chr[(n >> (j * 8)) & 0x0F];
-      return s;
-    },
-
-    hex(x) {
-      for (var i=0; i<x.length; i++)
-        x[i] = this.rhex(x[i]);
-      return x.join('');
-    },
-
-    md5(s) {
-      return this.hex(this.md51(s));
-    },
-
-    add32(a, b) {
-      return (a + b) & 0xFFFFFFFF;
     },
 
     handleWikidataFocus(entity) {
@@ -1517,6 +1784,8 @@ export default {
       delete entity.wikiThumbnail;
       delete entity.wikiChecked;
       delete entity.wikiNoMatch;
+      delete entity.wikiThumbnailOrg;
+
     },
 
     removeSemlabQid(entity) {
@@ -1587,6 +1856,8 @@ export default {
                 }                
               }
 
+
+              
               let contextText = this.blocks[entity.blocks[0]].clean;
               if (entity.blocks.length > 1) {
               const firstBlockWordCount = this.blocks[entity.blocks[0]].clean.split(/\s+/).length; // Split by any whitespace
@@ -1977,72 +2248,161 @@ export default {
 
     async normalizeLabels(){
 
-      this.statusLabelNormalize = true;
-
-      let sendList = []
-      let sendBlocks = []
-      console.log(this.entities)
+      const BATCH_SIZE = 10;
+      
+      let allEntities = [];
       for (let eId in this.entities){
         let entity = this.entities[eId];
-        sendList.push({
+        allEntities.push({
           internal_id: entity.internal_id,
           labels: entity.labels,
-          normalizedLabels: []
+          normalizedLabels: [],
+          entityId: eId
         });
-        if (sendBlocks.indexOf(entity.blocks[0]) == -1){
-          sendBlocks.push(entity.blocks[0]);
-        }
+
       }
 
-      let allBlockText = sendBlocks.map(b => this.blocks[b].clean).join(" ");
-
-
-      let prompt = `Normalize the words in this list of objects, normalize the labels in the key "labels", if they have honorifics remove them, if they are a shortened version of the entity make it the fuller form, make the term more search friendly if you were searching Wikipedia for the term. Do not invent names or expand the word without strong evidence, if you cannot expand it return it as it is. After the JSON below is the text the names are found in, use this text to help expand the name. Return JSON Only.`
-      prompt += `\n\nJSON:\n`
-      prompt += JSON.stringify(sendList, null, 2);
-      prompt += `\n\nText:\n"${allBlockText}"\n\n`
-      console.log(prompt)
-
-      let response = null;
-      try{
-        response = await asyncEmit('ask_llm_normalize_labels', prompt);
-      }catch (error) {
-        console.error("Error normalizing labels:", error);
-        alert("There was an error normalizing the labels, please try again.");
-        return;
-      }
       
-      if (!response || !response.success || !response.response) {
-        console.error("Error normalizing labels:", response.error);
-        alert("There was an error normalizing the labels, please try again.");
-        return;
-      }
+      const totalBatches = Math.ceil(allEntities.length / BATCH_SIZE);
+      
+      for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+        const startIdx = batchNum * BATCH_SIZE;
+        const endIdx = Math.min(startIdx + BATCH_SIZE, allEntities.length);
+        const batchEntities = allEntities.slice(startIdx, endIdx);
+        
+        this.statusLabelNormalize = `Working on batch ${batchNum + 1} of ${totalBatches}`;
+        let sendBlocks = [];     
 
-      this.statusLabelNormalize = false;
+        for (let batchEntity of batchEntities){
+          let entity = this.entities[batchEntity.entityId];
+          if (entity.blocks && entity.blocks.length > 0) {
+            if (sendBlocks.indexOf(entity.blocks[0]) == -1){
+              sendBlocks.push(entity.blocks[0]);
+              if (entity.blocks[1]){
+                sendBlocks.push(entity.blocks[1]);
+              }
 
-      for (let eId in this.entities){
-        let entity = this.entities[eId];
+            }
+          }else{
+            console.warn(`Entity ${entity.internal_id} has no blocks, skipping normalization.`);
+          }
+        }
+        let allBlockText = sendBlocks.map(b => this.blocks[b].clean).join(" ");
 
-        let lookForId = entity.internal_id;
-        let found = response.response.find(item => item.internal_id === lookForId);
-        if (found) {
-          if (found.normalizedLabels && found.normalizedLabels.length > 0) {
-            if (found.normalizedLabels[0] && found.labels.indexOf(found.normalizedLabels[0]) == -1){
-              console.log("Adding normalized label", found.normalizedLabels[0], "to entity", entity.internal_id, "replacing", found.labels[0]);
-              entity.normalizedLabel = found.normalizedLabels[0]
-              entity.useLabel = entity.normalizedLabel
+
+        const sendList = batchEntities.map(e => ({
+          internal_id: e.internal_id,
+          labels: e.labels,
+          normalizedLabels: []
+        }));
+
+        let prompt = `Normalize the words in this list of objects, normalize the labels in the key "labels", if they have honorifics remove them, if they are a shortened version of the entity make it the fuller form, make the term more search friendly if you were searching Wikipedia for the term. Do not invent names or expand the word without strong evidence, if you cannot expand it return it as it is. After the JSON below is the text the names are found in, use this text to help expand the name. Return JSON Only.`
+        prompt += `\n\nJSON:\n`
+        prompt += JSON.stringify(sendList, null, 2);
+        prompt += `\n\nText:\n"${allBlockText}"\n\n`
+        console.log(`Processing batch ${batchNum + 1}/${totalBatches}:`, prompt)
+        
+        let response = null;
+        try{
+          response = await asyncEmit('ask_llm_normalize_labels', prompt);
+        }catch (error) {
+          console.error(`Error normalizing labels for batch ${batchNum + 1}:`, error);
+          alert(`There was an error normalizing the labels for batch ${batchNum + 1}, please try again.`);
+          this.statusLabelNormalize = null;
+          return;
+        }
+        
+        if (!response || !response.success || !response.response) {
+          console.error(`Error normalizing labels for batch ${batchNum + 1}:`, response?.error);
+          alert(`There was an error normalizing the labels for batch ${batchNum + 1}, please try again.`);
+          this.statusLabelNormalize = null;
+          return;
+        }
+
+        for (let batchEntity of batchEntities){
+          let entity = this.entities[batchEntity.entityId];
+          let lookForId = batchEntity.internal_id;
+          let found = response.response.find(item => item.internal_id === lookForId);
+          if (found) {
+            if (found.normalizedLabels && found.normalizedLabels.length > 0) {
+              if (found.normalizedLabels[0] && found.labels.indexOf(found.normalizedLabels[0]) == -1){
+                console.log("Adding normalized label", found.normalizedLabels[0], "to entity", entity.internal_id, "replacing", found.labels[0]);
+                entity.normalizedLabel = found.normalizedLabels[0]
+                entity.useLabel = entity.normalizedLabel
+              }
             }
           }
-
         }
+        
+        console.log(`Batch ${batchNum + 1} LLM Response`, response)
       }
 
+      this.statusLabelNormalize = null;
+      console.log("All batches completed")
+      return true;
 
+    },
 
-          
-      console.log("LLM Response", response)
-      return response
+    async sendFilteredEntities() {
+      this.isSavingEntities = true;
+      
+      const allowedKeys = [
+        'entity',
+        'hidden',
+        'type',
+        'wikiReason',
+        'internal_id',
+        'labels',
+        'blocks',
+        'count',
+        'qid',
+        'labelSemlab',
+        'descriptionSemlab',
+        'wikiBaseReason',
+        'thumbnail',
+        'wikiQid',
+        'wikiLabel',
+        'wikiDescription',
+        'wikiThumbnailOrg',
+        'wikiThumbnail'
+      ];
 
+      const filteredEntities = {};
+      
+      for (let eId in this.entities) {
+        const entity = this.entities[eId];
+        const filteredEntity = {};
+        
+        for (let key of allowedKeys) {
+          if (key in entity) {
+            filteredEntity[key] = entity[key];
+          }
+        }
+        
+        filteredEntities[eId] = filteredEntity;
+      }
+
+      console.log('Sending filtered entities to backend:', filteredEntities);
+      
+      try {
+        const response = await asyncEmit('save_ner_entities', { user: this.user, job_id: this.documentId, entities: filteredEntities });
+        if (response && response.success) {
+          console.log('Entities saved successfully');
+          this.isSavingEntities = false;
+          this.entitiesHaveChanges = false;
+          return response;
+        } else {
+          console.error('Failed to save entities:', response?.error);
+          alert('Failed to save entities to backend');
+          this.isSavingEntities = false;
+          return null;
+        }
+      } catch (error) {
+        console.error('Error sending entities to backend:', error);
+        alert('Error sending entities to backend');
+        this.isSavingEntities = false;
+        return null;
+      }
     },
 
     async getSemlabProjects() {
@@ -2238,12 +2598,49 @@ export default {
         </div> -->
         
 
+        
 
         <div class="columns">
           <div class="column">
             <div class="etype-list">
-              <div v-for="type in Object.keys(entitiesByType).sort()">
-                <a :href="'#type-'+type" >{{ type }} <span class="lite-text">[{{ entitiesByType[type].length }}]</span></a>
+              <div v-for="type in Object.keys(entitiesByType).sort()" :key="type">
+                
+                <a :href="'#type-'+type" >
+                  {{ type }} <span class="lite-text">[{{ entitiesByType[type].length }}]</span> 
+                </a>  
+                  <span v-if="editingType !== type && typeAlignment[type.toLocaleLowerCase()] === null" 
+                        class="has-text-danger type-no-alignment">
+                    [No Alignment]
+                    <font-awesome-icon 
+                      :icon="['fas', 'pencil']" 
+                      class="edit-icon"
+                      @click.prevent.stop="startEditingType(type)" />
+                  </span>
+                  
+                  <span v-if="editingType !== type && typeAlignment[type.toLocaleLowerCase()] !== null" 
+                        class="type-is-aligned lite-text-more">
+                    <span class="qid-display">{{ typeAlignment[type.toLocaleLowerCase()] }}</span>
+                    <span class="type-string-display"><a target="_blank" :href="'https://base.semlab.io/entity/' + typeAlignment[type.toLocaleLowerCase()]">{{ getTypeStringFromQid(typeAlignment[type.toLocaleLowerCase()]) }}</a></span>
+                    <font-awesome-icon 
+                      :icon="['fas', 'pencil']" 
+                      class="edit-icon"
+                      @click.prevent.stop="startEditingType(type)" />
+                  </span>
+                  
+                  <select v-if="editingType === type"
+                          v-model="typeAlignment[type.toLocaleLowerCase()]"
+                          @change="stopEditingType()"
+                          @blur="stopEditingType()"
+                          @click.stop
+                          class="type-alignment-select">
+                    <option :value="null">No Alignment</option>
+                    <option v-for="(qid, typeString) in typeMap" 
+                            :key="qid" 
+                            :value="qid">
+                      {{ typeString }} ({{ qid }})
+                    </option>
+                  </select>
+                
               </div>
             </div>
           </div>
@@ -2257,7 +2654,9 @@ export default {
 
 
                 <button class="button" v-if="!statusLabelNormalize" @click="normalizeLabels()">Normalize Search Labels</button>
-                <font-awesome-icon class="spin" v-else  style="font-size: 2em;" :icon="['fas', 'hourglass-half']" />
+                
+                <span v-if="statusLabelNormalize" class="status-text">{{ statusLabelNormalize }}</span>
+                <font-awesome-icon v-if="statusLabelNormalize !== null" class="spin" style="font-size: 2em;" :icon="['fas', 'hourglass-half']" />
 
                 <hr class="actions-hr">
                 <span>Bulk Reconcile by Project:</span>
@@ -2334,7 +2733,46 @@ export default {
             
         </div>
 
-        <table class="table is-striped is-hoverable is-fullwidth">
+        <div class="buttons" style="margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center;">
+            <button 
+              class="button is-primary" 
+              :class="{ 'is-loading': isSavingEntities }"
+              @click="sendFilteredEntities()"
+              :disabled="isSavingEntities || !entities || Object.keys(entities).length === 0">
+              {{ entitiesHaveChanges ? 'Save Work' : 'Saved' }}
+            </button>
+            <label class="checkbox" style="margin-left: 15px;">
+              <input type="checkbox" v-model="autoSave">
+              Auto-save
+            </label>
+          </div>
+          
+          <div class="tabs">
+            <ul>
+              <li :class="{ 'is-active': activeTab === 'reconcile' }">
+                <a @click="activeTab = 'reconcile'">
+                  <font-awesome-icon style="font-size: 1em; padding-right: 0.5em;" :icon="['fas', 'circle-nodes']" />
+                  Reconcile
+                </a>
+              </li>
+              <li :class="{ 'is-active': activeTab === 'mint' }">
+
+                <a @click="activeTab = 'mint'">
+                  <font-awesome-icon style="font-size: 1em; padding-right: 0.5em;" :icon="['fas', 'burst']" />
+                  Mint</a>
+              </li>
+              <li :class="{ 'is-active': activeTab === 'data' }">
+                <a @click="activeTab = 'data'">
+                  <font-awesome-icon style="font-size: 1em; padding-right: 0.5em;" :icon="['fas', 'database']" />
+                  Data</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Reconcile Tab Content -->
+        <table v-if="activeTab === 'reconcile'" class="table is-striped is-hoverable is-fullwidth">
           <thead>
             <tr>
               <th>Entity</th>
@@ -2342,7 +2780,6 @@ export default {
               <th>Wikidata</th>
               <th>Blocks</th>
               <th>Actions</th>
-              <th>Test</th>
             </tr>
           </thead>
           <tbody>
@@ -2351,10 +2788,26 @@ export default {
               <tr>
                 <td colspan="6" :id="'type-'+index"  class="entity-table-class-header">
                   <a :href="'#type-'+index">{{ index }} <span class="lite-text">[{{ entitiesByType[index].length }}]</span></a>
+                  <button class="button is-small type-batch-button-left" 
+                          :class="{ 'is-loading': normalizingType === index }"
+                          @click="normalizeLabelsByType(index)" 
+                          :disabled="normalizingType !== null"
+                          style="margin-left: 10px;">
+                    <font-awesome-icon v-if="normalizingType !== index" :icon="['fas', 'arrow-down']" style="margin-right: 5px;" />
+                    Normalize All
+                  </button>
+                  <button class="button is-small type-batch-button" @click="processAllEntitiesWikidata(index)" style="margin-left: 5px;">
+                    <font-awesome-icon :icon="['fas', 'arrow-down']" style="margin-right: 5px;" />
+                    Wiki All
+                  </button>
+                  <button class="button is-small type-batch-button" @click="processAllEntitiesSemlab(index)" style="margin-left: 5px;">
+                    <font-awesome-icon :icon="['fas', 'arrow-down']" style="margin-right: 5px;" />
+                    SemLab All
+                  </button>
                 </td>
               </tr>
               <template v-for="entity in entitiesByType[index]">
-                <tr>
+                <tr :class="{ 'disabled-row': entity.hidden }">
                   <td v-if="entity.editing">
                     <input type="text" v-model="entity.entity" @keyup.enter="finishEditing($event,entity)" :id="'label-select-'+entity.internal_id+'-entity'" class="input is-small edit-entity-input" @blur="finishEditing($event,entity)" />
                   </td>
@@ -2366,7 +2819,7 @@ export default {
 
                   </td>
                   <td v-else> <span class="edit-entity-label" @click="editEntityLabel(entity)">{{ entity.entity }}<font-awesome-icon class="edit-entity-icon" :icon="['fas', 'pencil']"/></span></td>
-                  <td v-if="!entity.qid">
+                  <td class="entity-rec-td" v-if="!entity.qid">
 
 
 
@@ -2405,6 +2858,7 @@ export default {
                         <input 
                           type="text" 
                           class="input is-small wikidata-search-input"
+                          :disabled="entity.hidden"
                           :placeholder="'Search SemLab for ' + (entity.useLabel || entity.entity)"
                           v-model="semlabSearchQueries[entity.internal_id]"
                           @input="searchSemlab(entity.internal_id, $event.target.value)"
@@ -2426,7 +2880,7 @@ export default {
                           >
                             <div class="autocomplete-item-content">
                               <div class="autocomplete-item-text">
-                                <strong>{{ item.label }}</strong>
+                                <strong>{{ decodeHtmlEntities(item.label) }}</strong>
                                 <div v-if="item.description" class="lite-text" style="font-size: 0.85em; margin-top: 2px;">{{ item.description }}</div>
                               </div>
                             </div>
@@ -2437,7 +2891,7 @@ export default {
 
 
                   </td>
-                  <td v-else>
+                  <td class="entity-rec-td" v-else>
 
 
                     <template v-if="entity.wikiBaseChecked && entity.qid">
@@ -2480,7 +2934,7 @@ export default {
 
                   </td>
 
-                  <td>
+                  <td class="entity-rec-td">
                     
 
                     <font-awesome-icon v-if="entity.wikiCheckedStatus" class="spin" style="font-size: 1em;" :icon="['fas', 'hourglass-half']" />
@@ -2521,7 +2975,7 @@ export default {
                     <template v-else-if="entity.wikiQid">
                      
                       
-                      <div class="wikidata-match-container">
+                      <div class="wikidata-match-container hint--top hint--large" :aria-label="entity.wikiReason">
                         <div class="wikidata-text-content">
                           <a  :href="'https://www.wikidata.org/wiki/' + entity.wikiQid" target="_blank">
                                                     <img v-if="entity.wikiThumbnail" :src="entity.wikiThumbnail" alt="Thumbnail" class="thumbnail-wikidata" />
@@ -2540,14 +2994,17 @@ export default {
                     </template>      
 
                     <template v-if="entity.badMatches && entity.badMatches.length > 0">
-                      <div v-for="(match, index) in entity.badMatches" :key="index">
-                        <span 
-                          class="tag is-danger hint--top hint--large clickable-bad-match" 
-                          :aria-label="match.reason"
-                          @click="selectBadMatch(entity, match)"
-                        >
-                          {{ match.label }}
-                        </span>
+                      <div v-for="(match, index) in entity.badMatches" :key="index" > 
+                        <div class="hint--top hint--large" :aria-label="match.reason">
+                          <span 
+                            class="tag is-danger hint--top hint--large clickable-bad-match" 
+                            :aria-label="match.reason"
+                            @click="selectBadMatch(entity, match)"
+                          >
+                            {{ decodeHtmlEntities(match.label) }}
+                          </span>
+                        </div>                       
+                        <a :href="'https://www.wikidata.org/entity/' + match.qid" target="_blank"><span class="lite-text">({{ match.qid }})</span></a>
                         <span class="lite-text">
                           ({{ truncateDescription(match.description, entity.internal_id, index) }})
                           <span 
@@ -2564,7 +3021,7 @@ export default {
                           class="tag is-light clickable-none-option"
                           @click="clearBadMatches(entity)"
                         >
-                          None of these
+                          Clear Non-Matches
                         </span>
                       </div>
                     </template>
@@ -2575,6 +3032,8 @@ export default {
                           type="text" 
                           class="input is-small wikidata-search-input"
                           :placeholder="'Search Wikidata for ' + (entity.useLabel || entity.entity)"
+                          :disabled="entity.hidden"
+
                           v-model="wikidataSearchQueries[entity.internal_id]"
                           @input="searchWikidata(entity.internal_id, $event.target.value)"
                           @keydown="handleWikidataKeydown($event, entity)"
@@ -2602,7 +3061,7 @@ export default {
                                 @error="$event.target.style.display='none'"
                               />
                               <div class="autocomplete-item-text">
-                                <strong>{{ item.label }}</strong>
+                                <strong>{{ decodeHtmlEntities(item.label) }}</strong>
                                 <div v-if="item.description" class="lite-text" style="font-size: 0.85em; margin-top: 2px;">{{ item.description }}</div>
                               </div>
                             </div>
@@ -2613,13 +3072,16 @@ export default {
 
 
                   </td>
-                  <td>{{ entity.blocks.join(', ') }}</td>
-                  <td>
-                    <button class="button" @click="details(entity)">{{ activeEntity && activeEntity.internal_id === entity.internal_id ? 'Hide' : 'Details' }}</button>
-                  </td>
-                  <td>
-                    <button class="button" @click="runSemlab(entity)">SemLab</button>
-                    <button class="button" @click="runWikidata(entity)">Wiki</button>
+                  <td>{{ entity.blocks.length}} block{{ entity.blocks.length === 1 ? '' : 's' }}</td>
+                  <td style="white-space: nowrap;">
+
+ 
+                    <button :disabled="entity.hidden" class="button reconcile-button" @click="details(entity)">{{ activeEntity && activeEntity.internal_id === entity.internal_id ? 'Hide' : 'Details' }}</button>
+                    <button :disabled="entity.hidden" class="button reconcile-button" @click="runSemlab(entity)">SemLab</button>
+                    <button :disabled="entity.hidden" class="button reconcile-button" @click="runWikidata(entity)">Wiki</button>
+                   <button class="button reconcile-button eye-button" @click="toggleEntityVisibility(entity)" :class="{ 'always-visible': true }">
+                      <font-awesome-icon :icon="['fas', entity.hidden ? 'eye-slash' : 'eye']" />
+                    </button>
 
                   </td>
                 </tr>
@@ -2676,6 +3138,152 @@ export default {
           </tbody>
         </table>
 
+        <!-- Mint Tab Content -->
+        <div v-if="activeTab === 'mint'">
+          <div class="field" style="margin-bottom: 1.5rem;">
+            <label class="label">Default Project for Minting</label>
+            <div class="control">
+              <div class="select is-fullwidth">
+                <select v-model="defaultProject">
+                  <option :value="null">Select a project...</option>
+                  <option v-for="project in projects" :key="project.id" :value="project.id">
+                    {{ project.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <p class="help">Select the default project to use when minting new entities</p>
+          </div>
+          
+          <table class="table is-striped is-hoverable is-fullwidth">
+          <thead>
+            <tr>
+              <th>Entity</th>
+              <th>Data</th>
+              <th>Action</th>
+              <!-- Add more columns as needed -->
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="(entities, type) in entitiesByTypeForMint" :key="'mint-type-' + type">
+              <tr>
+                <td colspan="4" class="entity-table-class-header">
+                  <strong>{{ type }}</strong> <span class="lite-text">[{{ entities.length }}]</span>
+                </td>
+              </tr>
+              <template v-for="entity in entities" :key="'mint-entity-' + entity.internal_id">
+                <tr>
+                  <td class="mint-table-label">{{ entity.entity }}</td>
+                  <td class="mint-table-data" >
+                    
+                    <div class="columns is-multiline">
+                      <!-- Auth Label (single) -->
+                      <div class="column is-2">
+                        <label class="label is-small">Auth Label</label>
+                        <input class="input is-small" type="text" v-model="entity.mintData.authLabel">
+                      </div>
+                      
+                      <!-- Description (single) -->
+                      <div class="column is-3">
+                        <label class="label is-small">Description</label>
+                        <input class="input is-small" type="text" v-model="entity.mintData.description">
+                      </div>
+                      
+                      <!-- Variant Labels (multiple) -->
+                      <div class="column is-2">
+                        <label class="label is-small">Variant Labels</label>
+                        <div v-for="(variant, vIndex) in entity.mintData.variantLabel" :key="'variant-' + vIndex" class="field has-addons">
+                          <div class="control is-expanded">
+                            <input class="input is-small" type="text" v-model="entity.mintData.variantLabel[vIndex]">
+                          </div>
+                          <div class="control">
+                            <button class="button is-small is-danger" @click="removeFromArray(entity.mintData.variantLabel, vIndex)">
+                              <font-awesome-icon :icon="['fas', 'times']" />
+                            </button>
+                          </div>
+                        </div>
+                        <button class="button is-small is-success" @click="entity.mintData.variantLabel.push('')">
+                          <font-awesome-icon :icon="['fas', 'plus']" /> Add
+                        </button>
+                      </div>
+                      
+                      <!-- Projects (multiple) -->
+                      <div class="column is-2">
+                        <label class="label is-small">Projects</label>
+                        <div v-for="(proj, pIndex) in entity.mintData.project" :key="'project-' + pIndex" class="field has-addons">
+                          <div class="control is-expanded">
+                            <div class="select is-small is-fullwidth">
+                              <select v-model="entity.mintData.project[pIndex]">
+                                <option v-for="project in projects" :key="project.id" :value="project.id">
+                                  {{ project.label }}
+                                </option>
+                              </select>
+                            </div>
+                          </div>
+                          <div class="control">
+                            <button class="button is-small is-danger" @click="removeFromArray(entity.mintData.project, pIndex)">
+                              <font-awesome-icon :icon="['fas', 'times']" />
+                            </button>
+                          </div>
+                        </div>
+                        <button class="button is-small is-success" @click="entity.mintData.project.push('')">
+                          <font-awesome-icon :icon="['fas', 'plus']" /> Add
+                        </button>
+                      </div>
+                      
+                      <!-- Instance Of (multiple) -->
+                      <div class="column is-2">
+                        <label class="label is-small">Instance Of</label>
+                        <div v-for="(inst, iIndex) in entity.mintData.instanceOf" :key="'instance-' + iIndex" class="field has-addons">
+                          <div class="control is-expanded">
+                            <input class="input is-small" type="text" v-model="entity.mintData.instanceOf[iIndex]" placeholder="QID">
+                          </div>
+                          <div class="control">
+                            <button class="button is-small is-danger" @click="removeFromArray(entity.mintData.instanceOf, iIndex)">
+                              <font-awesome-icon :icon="['fas', 'times']" />
+                            </button>
+                          </div>
+                        </div>
+                        <button class="button is-small is-success" @click="entity.mintData.instanceOf.push('')">
+                          <font-awesome-icon :icon="['fas', 'plus']" /> Add
+                        </button>
+                      </div>
+                      
+                      <!-- Wikidata QID (single) -->
+                      <div class="column is-1">
+                        <label class="label is-small">Wiki QID</label>
+                        <input class="input is-small" type="text" v-model="entity.mintData.wikidataQid" readonly>
+                      </div>
+                    </div>
+
+
+
+                  </td>
+                  <td class="mint-table-action">
+                    Mint
+                  </td>
+
+                  <!-- Add more columns as needed -->
+                </tr>
+              </template>
+            </template>
+            <template v-if="Object.keys(entitiesByTypeForMint).length === 0">
+              <tr>
+                <td colspan="4" class="has-text-centered">
+                  <p class="has-text-grey">No entities ready for minting</p>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        </div>
+
+        <!-- Data Tab Content -->
+        <div v-if="activeTab === 'data'" class="data-tab-content" style="padding: 20px; min-height: 400px;">
+          <!-- Data content will go here -->
+          <p class="has-text-grey">Data view coming soon...</p>
+        </div>
+
 <!-- 
         <template v-for="(etype, index) in entitiesByType">
           <div >
@@ -2706,6 +3314,10 @@ export default {
   
 </template>
 <style>
+.entity-rec-td{
+  min-width: 300px;
+}
+
 .block-highlight {  
   background-color: #ff0;
   box-shadow: 0px 0px 10px 0px #ff0;
@@ -2799,6 +3411,10 @@ clip-path: polygon(20% 0%, 80% 0%, 100% 20%, 100% 80%, 80% 100%, 20% 100%, 0% 80
 .lite-text{
   font-size: 0.8em;
   color: #666;
+}
+.lite-text-more{
+  font-size: 0.8em;
+  color: #838383;
 }
 
 .a-diff{
@@ -3004,6 +3620,8 @@ label{
 .clickable-bad-match {
   cursor: pointer;
   transition: all 0.2s ease;
+  max-width: 200px;
+  overflow: hidden;
 }
 
 .clickable-bad-match:hover {
@@ -3164,6 +3782,110 @@ label{
 
 
 
+.edit-icon {
+  display: none;
+  margin-left: 5px;
+  cursor: pointer;
+  font-size: 0.95em !important;
+  color: inherit;
+  transition: color 0.2s;
+}
 
+.edit-icon:hover {
+  color: #333;
+}
+
+.type-no-alignment:hover .edit-icon,
+.type-is-aligned:hover .edit-icon {
+  display: inline-block;
+}
+
+.type-is-aligned .qid-display {
+  margin-left: 5px;
+  display: inline;
+}
+
+.type-is-aligned .type-string-display {
+  margin-left: 5px;
+  display: none;
+  text-decoration: underline;
+}
+
+.type-is-aligned:hover .qid-display {
+  display: none;
+}
+
+.type-is-aligned:hover .type-string-display {
+  display: inline;
+}
+
+.type-alignment-select {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 2px 5px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.disabled-row {
+  position: relative;
+  opacity: 0.5;
+}
+
+.disabled-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 10px,
+    rgba(128, 128, 128, 0.2) 10px,
+    rgba(128, 128, 128, 0.2) 20px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.disabled-row .eye-button.always-visible {
+  position: relative;
+  z-index: 2;
+  opacity: 1 !important;
+  pointer-events: auto;
+}
+
+.eye-button {
+  min-width: 40px;
+  height: 2.5em;
+  padding: calc(0.5em - 1px) 0.75em;
+}
+
+.type-batch-button {
+  float: right;
+  margin-top: -3px;
+}
+
+.type-batch-button-left {
+  margin-top: -3px;
+  margin-left: 10px;
+}
+
+.mint-table-data {
+  width: 75%;
+  min-width: 300px;
+}
+.mint-table-label{
+  max-width: 200px;
+  width: 125px;
+  overflow: hidden;
+}
+.mint-table-action{
+  width: 50px;
+  max-width: 50px;
+}
 
 </style>

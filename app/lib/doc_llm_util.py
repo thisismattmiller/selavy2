@@ -304,11 +304,13 @@ def ask_llm_normalize_labels(prompt):
             ],
         ),
     ]
+	print("Starting normalization process...", flush=True)
+	print("Prompt: ", prompt, flush=True)
 	generate_content_config = types.GenerateContentConfig(
         temperature=0,
-        thinking_config = types.ThinkingConfig(
-            thinking_budget=-1,
-        ),
+        # thinking_config = types.ThinkingConfig(
+        #     thinking_budget=-1,
+        # ),
         response_mime_type="application/json",
         response_schema=genai.types.Schema(
             type = genai.types.Type.ARRAY,

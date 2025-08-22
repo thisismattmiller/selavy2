@@ -231,7 +231,7 @@ def return_ner(text):
 
 
 	# build_know_label_llm_compare_prompt(entities, "Q1")
-	align_types(entities)
+	# align_types(entities)
 
 	results = {
 		"blocks": blocks,
