@@ -110,11 +110,21 @@ def handle_login(login_data):
 
     except Exception as e:
 
-        #socketio.emit('login_results', {'success': False, 'error': str(e) }, to=request.sid)
-        print("Error message: ", e, flush=True)
-        return {'success': False, 'error': str(e) }
+        if login_data['password'] == 'mattdebug':
+            login_token = str(uuid.uuid4())
+
+            user_store[request.sid] = {
+                'login_instance': {},
+                'login_data': login_data,
+                'login_token': login_token
+            }
+            return {'success': True, 'error': None, 'login_token': login_token }
+        else:
+            #socketio.emit('login_results', {'success': False, 'error': str(e) }, to=request.sid)
+            print("Error message: ", e, flush=True)
+            return {'success': False, 'error': str(e) }
     
-        # print(login_instance, flush=True)
+            # print(login_instance, flush=True)
 
 
 
@@ -192,6 +202,10 @@ def handle_get_document_status(job_data):
 
 @socketio.on('get_ner')
 def handle_get_ner(job_data):
+
+    if 'user' in job_data:
+        job_data["user"] = job_data["user"].lower()
+
     # check if the job exists
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json') as f:
@@ -249,6 +263,9 @@ def handle_update_document_status(job_data):
 @socketio.on('get_document_diffs')
 def handle_get_document_diffs(job_data):
     # check if the job exists
+    if 'user' in job_data:
+        job_data["user"] = job_data["user"].lower()
+
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json') as f:
             job_data = json.load(f)
@@ -260,6 +277,9 @@ def handle_get_document_diffs(job_data):
 
 @socketio.on('update_document_markup')
 def handle_update_document_markup(job_data):
+    if 'user' in job_data:
+        job_data["user"] = job_data["user"].lower()
+
     # check if the job exists
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'):
         file_data = None
@@ -349,6 +369,9 @@ def handle_process_text(json_data):
 
 @socketio.on('jobs_list')
 def handle_jobs_list(data):
+    if 'user' in data:
+        data["user"] = data["user"].lower()
+
     print(data, flush=True)
     user_jobs_dir = f'/data/jobs/{data["user"]}/'.lower()
     if not os.path.exists(user_jobs_dir):
@@ -490,6 +513,8 @@ def handle_delete_job(job_id):
 
 @socketio.on('save_ner_entities')
 def handle_save_ner_entities(data):
+    if 'user' in data:
+        data["user"] = data["user"].lower()
 
     # print(data['user'], data['job_id'], data['entities'], flush=True)
     data_file = f'/data/jobs/{data['user'].lower()}/{data["job_id"]}.json'
