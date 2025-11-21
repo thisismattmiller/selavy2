@@ -40,7 +40,18 @@
                   </span>
                   <router-link :to="{ name: 'ner', params: { documentId: job['id'] } }">
                     NER Review
-                  </router-link>                 
+                  </router-link>
+                </span>
+              </div>
+
+              <div class="workflow-status">
+                <span class="icon-text">
+                  <span class="icon">
+                    <font-awesome-icon :icon="['fas', 'align-left']" />
+                  </span>
+                  <router-link :to="{ name: 'blocks', params: { id: job['id'] } }">
+                    View Blocks
+                  </router-link>
                 </span>
               </div>
 

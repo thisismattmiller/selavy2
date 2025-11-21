@@ -101,16 +101,26 @@ export default {
       baseWorkQueueTimer: null,
       baseWorkComplete: false,
 
+      forceEntitiesByTypeForMintUpdateTrigger: 0,
+
+      possibleInstanceOfs: [], // stores SPARQL query results as {qid, label}
+      instanceOfSearchQueries: {}, // track search queries for instance of typeahead
+      instanceOfSearchResults: {}, // track filtered search results for instance of
+      instanceOfSelectedIndex: {}, // track selected index for keyboard navigation
+      showInstanceOfTypeahead: {}, // track which entity's typeahead is visible
+
     }
   },
   computed: {
    
    //  ...mapStores(useUserStore),
-    ...mapWritableState(useUserStore, ['isAuthenticated', 'user']),
+    ...mapWritableState(useUserStore, ['isAuthenticated', 'user', 'login_token']),
     
     // Filter entities for mint table - only show entities with wikiQid but no qid, or minted=true
     entitiesByTypeForMint() {
       const filtered = {};
+
+      this.forceEntitiesByTypeForMintUpdateTrigger; 
       
       for (const type in this.entitiesByType) {
         const mintEntities = this.entitiesByType[type].filter(entity => {
@@ -137,14 +147,37 @@ export default {
           
           // Initialize mintData with values from entity
           entityCopy.mintData = {
-            authLabel: entity.wikiLabel || entity.entity || '',
-            description: entity.wikiDescription || '',
+            authLabel: entity.mintAddAuthLabel || entity.wikiLabel || entity.entity || '',
+            description: entity.mintAddDescription || entity.wikiDescription || '',
             variantLabel: Array.from(variantLabels),
             project: this.defaultProject ? [this.defaultProject] : [],
             instanceOf: instanceOfQid ? [instanceOfQid] : [],
             wikidataQid: entity.wikiQid || ''
           };
-          
+
+          if (entity.mintAddProject){
+            // combine the two arrays and remove duplicates
+            entityCopy.mintData.project = [...new Set([...entityCopy.mintData.project, ...entity.mintAddProject])];
+          }
+          if (entity.mintAddVariantLabel){
+            // combine the two arrays and remove duplicates
+            console.log("entity.mintAddVariantLabel", entity.mintAddVariantLabel)
+            console.log("entityCopy.mintData.variantLabel", entityCopy.mintData.variantLabel)
+            entityCopy.mintData.variantLabel = [...new Set([...entityCopy.mintData.variantLabel, ...entity.mintAddVariantLabel])];
+
+            const nullIndex = entityCopy.mintData.variantLabel.indexOf(null);
+            if (nullIndex > -1) {
+              entityCopy.mintData.variantLabel.splice(nullIndex, 1);
+              entityCopy.mintData.variantLabel.push(null);
+            }
+          }
+          if (entity.mintAddInstanceOf && entity.mintAddInstanceOf.length > 0){
+            // Use mintAddInstanceOf directly (don't merge with default)
+            entityCopy.mintData.instanceOf = [...entity.mintAddInstanceOf];
+          }
+
+
+
           return entityCopy;
         });
         
@@ -155,9 +188,90 @@ export default {
       }
       
       return filtered;
+    },
+
+    // Filter entities for mint table - only show entities with todoMint=true
+    entitiesByTypeForTodoMint() {
+      const filtered = {};
+
+      this.forceEntitiesByTypeForMintUpdateTrigger;
+
+      for (const type in this.entitiesByType) {
+        const mintEntities = this.entitiesByType[type].filter(entity => {
+          // Include if: has todoMint flag set to true
+          return entity.todoMint === true;
+        }).map(entity => {
+          // Create a copy of the entity with mintData
+          const entityCopy = { ...entity };
+
+          // Get unique variant labels
+          const variantLabels = new Set();
+          if (entity.labels && Array.isArray(entity.labels)) {
+            entity.labels.forEach(label => variantLabels.add(label));
+          }
+          if (entity.normalizedLabel) {
+            variantLabels.add(entity.normalizedLabel);
+          }
+          if (entity.useLabel) {
+            variantLabels.add(entity.useLabel);
+          }
+
+          // Get the instanceOf QID from typeMap based on entity's type
+          const instanceOfQid = entity.type ? this.typeMap[entity.type.toLowerCase()] : null;
+
+          // Initialize mintData with values from entity
+          entityCopy.mintData = {
+            authLabel: entity.mintAddAuthLabel || entity.entity || '',
+            description: entity.mintAddDescription || '',
+            variantLabel: Array.from(variantLabels),
+            project: this.defaultProject ? [this.defaultProject] : [],
+            instanceOf: instanceOfQid ? [instanceOfQid] : [],
+            wikidataQid: ''
+          };
+
+          if (entity.mintAddProject){
+            // combine the two arrays and remove duplicates
+            entityCopy.mintData.project = [...new Set([...entityCopy.mintData.project, ...entity.mintAddProject])];
+          }
+          if (entity.mintAddVariantLabel){
+            // combine the two arrays and remove duplicates
+            entityCopy.mintData.variantLabel = [...new Set([...entityCopy.mintData.variantLabel, ...entity.mintAddVariantLabel])];
+
+            const nullIndex = entityCopy.mintData.variantLabel.indexOf(null);
+            if (nullIndex > -1) {
+              entityCopy.mintData.variantLabel.splice(nullIndex, 1);
+              entityCopy.mintData.variantLabel.push(null);
+            }
+          }
+          if (entity.mintAddInstanceOf && entity.mintAddInstanceOf.length > 0){
+            // Use mintAddInstanceOf directly (don't merge with default)
+            entityCopy.mintData.instanceOf = [...entity.mintAddInstanceOf];
+          }
+
+
+          return entityCopy;
+        });
+
+        // Only include type if it has matching entities
+        if (mintEntities.length > 0) {
+          filtered[type] = mintEntities;
+        }
+      }
+
+      return filtered;
+    },
+
+    // Sorted typeMap for select dropdowns
+    sortedTypeMap() {
+      const sorted = {};
+      Object.keys(this.typeMap)
+        .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+        .forEach(key => {
+          sorted[key] = this.typeMap[key];
+        });
+      return sorted;
     }
- 
- 
+
    },
    
    watch: {
@@ -412,7 +526,155 @@ export default {
     removeFromArray(array, index) {
       array.splice(index, 1);
     },
+
+
     
+    addToProjectArray(entity) {
+      console.log(entity)
+      console.log(this.entities)
+      // find the entitiy in this.entities that matches entity.internal_id
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+      if (!existingEntity.mintAddProject) {
+        existingEntity.mintAddProject = [];
+      }
+      existingEntity.mintAddProject.push(null);
+
+    },
+
+    removeFromProjectArray(entity, pIndex) {
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+      if (existingEntity.mintAddProject && existingEntity.mintAddProject.length > pIndex) {
+        existingEntity.mintAddProject.splice(pIndex, 1);
+      }
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+    },
+
+    addProjectUpdate(event, entity,pIndex){
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+
+
+      let valueToAdd = event.target.value
+
+      if (existingEntity && existingEntity.mintAddProject && existingEntity.mintAddProject.indexOf(valueToAdd) == -1){
+        let nullIndex = existingEntity.mintAddProject.indexOf(null);
+        if (nullIndex > -1){
+          existingEntity.mintAddProject[nullIndex] = valueToAdd;
+        }
+
+
+      }
+
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+    },
+
+
+    updateAuthLabel(event, entity) {
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+      existingEntity.mintAddAuthLabel = event.target.value;
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+    },
+
+    updateDescription(event, entity) {
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+      existingEntity.mintAddDescription = event.target.value;
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+    },
+
+    addToVariantLabelArray(entity) {
+      console.log(entity)
+      console.log(this.entities)
+      // find the entitiy in this.entities that matches entity.internal_id
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+      if (!existingEntity.mintAddVariantLabel) {
+        existingEntity.mintAddVariantLabel = [null];
+      }else{
+        existingEntity.mintAddVariantLabel = [...new Set([...existingEntity.mintAddVariantLabel, ...entity.mintData.variantLabel]), null];
+      }
+
+
+      console.log("BEFORE ADDING to existingEntity.mintAddVariantLabel",existingEntity.mintAddVariantLabel)
+
+      console.log("existingEntity.mintAddVariantLabel",existingEntity.mintAddVariantLabel)
+    },
+    removeVariantLabel(entity,vIndex){
+
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+
+      let valuetoRemove = entity.mintData.variantLabel[vIndex]
+
+      console.log("existingEntity",existingEntity)
+      console.log("existingEntity.mintAddVariantLabel",existingEntity.mintAddVariantLabel)
+      console.log("valuetoRemove",valuetoRemove)
+
+      if (existingEntity.mintAddVariantLabel && existingEntity.mintAddVariantLabel.length > 0){
+        let index = existingEntity.mintAddVariantLabel.indexOf(valuetoRemove);
+        if (index > -1){
+          existingEntity.mintAddVariantLabel.splice(index, 1);
+        }
+      }
+      if (existingEntity.labels && existingEntity.labels.length > 0){
+        let index = existingEntity.labels.indexOf(valuetoRemove);
+        if (index > -1){
+          existingEntity.labels.splice(index, 1);
+        }
+      }
+
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+
+
+    },
+
+    updateVariantLabel(event, entity, vIndex){
+
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+        console.log("existingEntity", existingEntity)
+
+
+      if (existingEntity && entity.mintData && existingEntity.mintAddVariantLabel && entity.mintData.variantLabel){
+        console.log("Dooing it")
+        existingEntity.mintAddVariantLabel = [...new Set([...existingEntity.mintAddVariantLabel, ...entity.mintData.variantLabel])];
+        console.log("event", event)
+        console.log("entity", existingEntity)
+
+
+        this.forceEntitiesByTypeForMintUpdateTrigger++;
+      }
+    },
+    
+
+
     decodeHtmlEntities(text) {
       if (!text) return text;
       const textarea = document.createElement('textarea');
@@ -682,7 +944,7 @@ export default {
       this.semlabClasses = []
       sparqlData.results.bindings.map(binding => {
 
-        console.log("binding", binding)
+        
         this.semlabClasses.push({
           qid: binding.item.value.replace('http://base.semlab.io/entity/', ''),
           label: binding.itemLabel.value
@@ -700,12 +962,15 @@ export default {
     async workEntity(internal_id,adHoc= false){
 
       let entity = this.entities[internal_id]
-
+      console.log("Working:", entity)
       if(entity.wikiQid){
+        console.log([this.workQueue1, this.workQueue2, this.workQueue3])
         for (let queue of [this.workQueue1, this.workQueue2, this.workQueue3]){
-          let index = queue.indexOf(internal_id);
-          if (index > -1) {
-            queue.splice(index, 1); // Remove the entity from the queue
+          if (queue){
+            let index = queue.indexOf(internal_id);
+            if (index > -1) {
+              queue.splice(index, 1); // Remove the entity from the queue
+            }
           }
         }        
         return true // already has a qid, no need to work on it
@@ -2364,7 +2629,16 @@ export default {
         'wikiLabel',
         'wikiDescription',
         'wikiThumbnailOrg',
-        'wikiThumbnail'
+        'wikiThumbnail',
+        'todoMint',
+        'minted',
+        'mintAddAuthLabel',
+        'mintAddDescription',
+        'mintAddVariantLabel',
+        'mintAddProject',
+        'mintAddInstanceOf',
+
+
       ];
 
       const filteredEntities = {};
@@ -2531,15 +2805,453 @@ export default {
 
     },
 
-    
+    async fetchPossibleInstanceOfs() {
+      const sparqlQuery = `
+        SELECT DISTINCT ?instanceOf ?instanceOfLabel
+        WHERE{
+            ?item wdt:P1 ?instanceOf
+          SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
+        }
+        limit 1000
+      `;
 
-    
+      const url = 'https://query.semlab.io/proxy/wdqs/bigdata/namespace/wdq/sparql';
+
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/sparql-results+json'
+          },
+          body: `query=${encodeURIComponent(sparqlQuery)}`
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Transform the SPARQL results into {qid, label} format
+        this.possibleInstanceOfs = data.results.bindings.map(binding => ({
+          qid: binding.instanceOf.value.split('/').pop(), // Extract Qid from URI
+          label: binding.instanceOfLabel.value
+        }));
+
+        console.log('Loaded possibleInstanceOfs:', this.possibleInstanceOfs.length);
+      } catch (error) {
+        console.error('Error fetching possible instance ofs:', error);
+      }
+    },
+
+    showInstanceOfTypeaheadForEntity(entity) {
+      const entityId = entity.internal_id;
+      this.showInstanceOfTypeahead[entityId] = true;
+      this.instanceOfSearchQueries[entityId] = '';
+      this.instanceOfSearchResults[entityId] = [];
+      this.instanceOfSelectedIndex[entityId] = -1;
+    },
+
+    focusInstanceOfField(entityId, iIndex, instanceOfId) {
+      const searchKey = `${entityId}-${iIndex}`;
+      // When focusing on a field, clear the search query to show placeholder
+      this.instanceOfSearchQueries[searchKey] = '';
+      this.instanceOfSearchResults[searchKey] = [];
+      this.instanceOfSelectedIndex[searchKey] = -1;
+    },
+
+    searchInstanceOf(entityId, searchTerm, iIndex) {
+      // Support both old style (entityId only) and new style (entityId-iIndex) keys
+      const searchKey = iIndex !== undefined ? `${entityId}-${iIndex}` : entityId;
+
+      if (!searchTerm || searchTerm.trim() === '') {
+        this.instanceOfSearchResults[searchKey] = [];
+        this.instanceOfSelectedIndex[searchKey] = -1;
+        return;
+      }
+
+      const lowerSearch = searchTerm.toLowerCase();
+      const filtered = this.possibleInstanceOfs.filter(item =>
+        item.label.toLowerCase().includes(lowerSearch) ||
+        item.qid.toLowerCase().includes(lowerSearch)
+      ).slice(0, 20); // Limit to 20 results
+
+      this.instanceOfSearchResults[searchKey] = filtered;
+      this.instanceOfSelectedIndex[searchKey] = -1;
+    },
+
+    selectInstanceOfItem(entity, iIndexOrItem, item) {
+      // Support both signatures:
+      // Old: selectInstanceOfItem(entity, item)
+      // New: selectInstanceOfItem(entity, iIndex, item)
+      let iIndex, selectedItem;
+      if (item === undefined) {
+        // Old signature: entity, item
+        iIndex = null;
+        selectedItem = iIndexOrItem;
+      } else {
+        // New signature: entity, iIndex, item
+        iIndex = iIndexOrItem;
+        selectedItem = item;
+      }
+
+      const entityId = entity.internal_id;
+
+      if (iIndex !== null) {
+        // New style: replace specific index in mintAddInstanceOf
+        let existingEntity = this.entities[entityId];
+        if (!existingEntity) {
+          console.error("Entity not found:", entity);
+          return;
+        }
+        if (!existingEntity.mintAddInstanceOf) {
+          existingEntity.mintAddInstanceOf = [];
+        }
+        existingEntity.mintAddInstanceOf[iIndex] = selectedItem.qid;
+
+        // Clear search state for this specific field
+        const searchKey = `${entityId}-${iIndex}`;
+        this.instanceOfSearchQueries[searchKey] = '';
+        this.instanceOfSearchResults[searchKey] = [];
+        this.instanceOfSelectedIndex[searchKey] = -1;
+
+        this.forceEntitiesByTypeForMintUpdateTrigger++;
+      } else {
+        // Old style: push to mintData.instanceOf array
+        if (!entity.mintData.instanceOf) {
+          entity.mintData.instanceOf = [];
+        }
+        entity.mintData.instanceOf.push(selectedItem.qid);
+
+        // Clear typeahead state
+        this.showInstanceOfTypeahead[entityId] = false;
+        this.instanceOfSearchQueries[entityId] = '';
+        this.instanceOfSearchResults[entityId] = [];
+
+        // Call method for when instance is added
+        this.onInstanceOfAdded(entity, selectedItem.qid);
+      }
+    },
+
+    clearInstanceOfSearch(entityId) {
+      setTimeout(() => {
+        this.instanceOfSearchResults[entityId] = [];
+        this.instanceOfSelectedIndex[entityId] = -1;
+      }, 200);
+    },
+
+    handleInstanceOfKeydown(event, entityIdOrEntity, iIndex) {
+      // Support both signatures:
+      // Old: handleInstanceOfKeydown(event, entity)
+      // New: handleInstanceOfKeydown(event, entityId, iIndex)
+      let entityId, entity;
+      if (typeof entityIdOrEntity === 'object') {
+        // Old signature: entity object
+        entity = entityIdOrEntity;
+        entityId = entity.internal_id;
+        iIndex = undefined;
+      } else {
+        // New signature: entityId string
+        entityId = entityIdOrEntity;
+        entity = this.entities[entityId];
+      }
+
+      const searchKey = iIndex !== undefined ? `${entityId}-${iIndex}` : entityId;
+      const results = this.instanceOfSearchResults[searchKey];
+
+      if (!results || results.length === 0) return;
+
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          if (this.instanceOfSelectedIndex[searchKey] < results.length - 1) {
+            this.instanceOfSelectedIndex[searchKey]++;
+          }
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          if (this.instanceOfSelectedIndex[searchKey] > 0) {
+            this.instanceOfSelectedIndex[searchKey]--;
+          }
+          break;
+        case 'Enter':
+          event.preventDefault();
+          if (this.instanceOfSelectedIndex[searchKey] >= 0) {
+            if (iIndex !== undefined) {
+              this.selectInstanceOfItem(entity, iIndex, results[this.instanceOfSelectedIndex[searchKey]]);
+            } else {
+              this.selectInstanceOfItem(entity, results[this.instanceOfSelectedIndex[searchKey]]);
+            }
+          }
+          break;
+        case 'Escape':
+          if (iIndex === undefined) {
+            this.showInstanceOfTypeahead[entityId] = false;
+          }
+          this.instanceOfSearchResults[searchKey] = [];
+          break;
+      }
+    },
+
+    cancelInstanceOfTypeahead(entityId) {
+      this.showInstanceOfTypeahead[entityId] = false;
+      this.instanceOfSearchQueries[entityId] = '';
+      this.instanceOfSearchResults[entityId] = [];
+    },
+
+    addToInstanceOfArray(entity) {
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+      if (!existingEntity.mintAddInstanceOf) {
+        existingEntity.mintAddInstanceOf = [];
+      }
+      existingEntity.mintAddInstanceOf.push(null);
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+    },
+
+    removeFromInstanceOfArray(entity, iIndex) {
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+      if (existingEntity.mintAddInstanceOf && existingEntity.mintAddInstanceOf.length > iIndex) {
+        existingEntity.mintAddInstanceOf.splice(iIndex, 1);
+      }
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+    },
+
+    getInstanceOfLabel(instanceOfId) {
+      if (!instanceOfId) return '';
+      const found = this.possibleInstanceOfs.find(item => item.qid === instanceOfId);
+      return found ? `${found.label} (${found.qid})` : instanceOfId;
+    },
+
+    onInstanceOfAdded(entity, qid) {
+      console.log('Instance Of added:', qid, 'to entity:', entity);
+
+      let existingEntity = this.entities[entity.internal_id];
+      if (!existingEntity) {
+        console.error("Entity not found:", entity);
+        return;
+      }
+
+      if (existingEntity){
+        if (!existingEntity.mintAddInstanceOf){
+          existingEntity.mintAddInstanceOf = [];
+        }
+
+        if (existingEntity.mintAddInstanceOf.indexOf(qid) == -1){
+          existingEntity.mintAddInstanceOf.push(qid);
+        }
+      }
+
+
+
+      this.forceEntitiesByTypeForMintUpdateTrigger++;
+
+
+
+
+
+
+    },
+
+    async mintFromWikidata(entity) {
+      console.log('Minting entity from Wikidata:', entity);
+
+      // Validate required fields
+      const errors = [];
+
+      if (!entity.mintData.authLabel || entity.mintData.authLabel.trim() === '') {
+        errors.push('Auth Label is required');
+      }
+
+      if (!entity.mintData.project || entity.mintData.project.length === 0 || !entity.mintData.project[0]) {
+        errors.push('At least one Project is required');
+      }
+
+      if (!entity.mintData.instanceOf || entity.mintData.instanceOf.length === 0 || !entity.mintData.instanceOf[0]) {
+        errors.push('At least one Instance Of is required');
+      }
+
+      if (errors.length > 0) {
+        // Store validation error on the entity
+        let existingEntity = this.entities[entity.internal_id];
+        if (existingEntity) {
+          existingEntity.mintValidationError = errors.join(', ');
+          this.forceEntitiesByTypeForMintUpdateTrigger++;
+        }
+        return;
+      }
+
+      // Clear any previous validation errors
+      let existingEntity = this.entities[entity.internal_id];
+      if (existingEntity) {
+        delete existingEntity.mintValidationError;
+      }
+
+      console.log("this.login_token",this.login_token)
+      let results = await asyncEmit('wikibase_mint_entity', { entity: entity, login_token: this.login_token  });
+
+      console.log(results)
+      if (!results || !results.success) {
+        if (existingEntity) {
+          existingEntity.mintValidationError = results.error ? results.error : 'Unknown error occurred during minting';
+          this.forceEntitiesByTypeForMintUpdateTrigger++;
+        }
+        return;
+      }
+
+      // Handle successful minting
+      if (results.success && results.qid) {
+        if (existingEntity) {
+          existingEntity.qid = results.qid;
+          existingEntity.labelSemlab = results.label || entity.mintData.authLabel || entity.entity;
+          existingEntity.descriptionSemlab = results.description || entity.mintData.description || '';
+          existingEntity.minted = true;
+          delete existingEntity.mintValidationError; // Clear any errors
+
+          this.forceEntitiesByTypeForMintUpdateTrigger++;
+
+          console.log(`Entity successfully minted with QID: ${results.qid}`);
+        }
+      }
+
+    },
+
+    getFilteredEntitiesForDownload(filterType) {
+      // Use the same allowedKeys from sendFilteredEntities
+      const allowedKeys = [
+        'entity',
+        'hidden',
+        'type',
+        'wikiReason',
+        'internal_id',
+        'labels',
+        'blocks',
+        'count',
+        'qid',
+        'labelSemlab',
+        'descriptionSemlab',
+        'wikiBaseReason',
+        'thumbnail',
+        'wikiQid',
+        'wikiLabel',
+        'wikiDescription',
+        'wikiThumbnailOrg',
+        'wikiThumbnail',
+        'todoMint',
+        'minted',
+        'mintAddAuthLabel',
+        'mintAddDescription',
+        'mintAddVariantLabel',
+        'mintAddProject',
+        'mintAddInstanceOf',
+      ];
+
+      const filteredEntities = [];
+
+      for (let eId in this.entities) {
+        const entity = this.entities[eId];
+
+        // Apply filter based on type
+        if (filterType === 'reconciled' && !entity.qid && !entity.wikiQid) {
+          continue; // Skip entities that aren't reconciled
+        }
+        if (filterType === 'wikibase' && !entity.qid) {
+          continue; // Skip entities without SemLab QID
+        }
+        if (filterType === 'wikidata' && !entity.wikiQid) {
+          continue; // Skip entities without Wikidata QID
+        }
+
+        const filteredEntity = {};
+        for (let key of allowedKeys) {
+          if (key in entity) {
+            filteredEntity[key] = entity[key];
+          }
+        }
+
+        filteredEntities.push(filteredEntity);
+      }
+
+      return filteredEntities;
+    },
+
+    downloadJSON(filterType) {
+      const entities = this.getFilteredEntitiesForDownload(filterType);
+      const dataStr = JSON.stringify(entities, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `entities_${filterType}_${new Date().toISOString().split('T')[0]}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    },
+
+    downloadCSV(filterType) {
+      const entities = this.getFilteredEntitiesForDownload(filterType);
+
+      if (entities.length === 0) {
+        alert('No entities to download');
+        return;
+      }
+
+      // Get all unique keys from all entities
+      const allKeys = new Set();
+      entities.forEach(entity => {
+        Object.keys(entity).forEach(key => allKeys.add(key));
+      });
+
+      const headers = Array.from(allKeys);
+
+      // Convert entities to CSV rows
+      const csvRows = [];
+      csvRows.push(headers.join(','));
+
+      entities.forEach(entity => {
+        const values = headers.map(header => {
+          const value = entity[header];
+          // Handle arrays and objects
+          if (Array.isArray(value)) {
+            return `"${value.join('; ')}"`;
+          } else if (typeof value === 'object' && value !== null) {
+            return `"${JSON.stringify(value)}"`;
+          } else if (typeof value === 'string') {
+            // Escape quotes and wrap in quotes if contains comma
+            return `"${value.replace(/"/g, '""')}"`;
+          }
+          return value !== undefined && value !== null ? value : '';
+        });
+        csvRows.push(values.join(','));
+      });
+
+      const csvStr = csvRows.join('\n');
+      const dataBlob = new Blob([csvStr], { type: 'text/csv' });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `entities_${filterType}_${new Date().toISOString().split('T')[0]}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    },
+
+
+
+
   },
 
 
   mounted() {
     // Component lifecycle hook when component is mounted
     this.initialize()
+    this.fetchPossibleInstanceOfs()
   }
 }
 
@@ -2634,8 +3346,8 @@ export default {
                           @click.stop
                           class="type-alignment-select">
                     <option :value="null">No Alignment</option>
-                    <option v-for="(qid, typeString) in typeMap" 
-                            :key="qid" 
+                    <option v-for="(qid, typeString) in sortedTypeMap"
+                            :key="qid"
                             :value="qid">
                       {{ typeString }} ({{ qid }})
                     </option>
@@ -2756,6 +3468,12 @@ export default {
                   Reconcile
                 </a>
               </li>
+              <li :class="{ 'is-active': activeTab === 'importWikidata' }">
+
+                <a @click="activeTab = 'importWikidata'">
+                  <font-awesome-icon style="font-size: 1em; padding-right: 0.5em;" :icon="['fas', 'file-import']" />
+                  Import Wikidata</a>
+              </li>
               <li :class="{ 'is-active': activeTab === 'mint' }">
 
                 <a @click="activeTab = 'mint'">
@@ -2776,6 +3494,7 @@ export default {
           <thead>
             <tr>
               <th>Entity</th>
+              <th style="text-align: center; width: 80px;">Mint</th>
               <th>Wikibase</th>
               <th>Wikidata</th>
               <th>Blocks</th>
@@ -2819,6 +3538,17 @@ export default {
 
                   </td>
                   <td v-else> <span class="edit-entity-label" @click="editEntityLabel(entity)">{{ entity.entity }}<font-awesome-icon class="edit-entity-icon" :icon="['fas', 'pencil']"/></span></td>
+
+                  <td style="text-align: center; vertical-align: middle;">
+                    <input
+                      type="checkbox"
+                      v-model="entity.todoMint"
+                      :disabled="entity.wikiQid || entity.qid"
+                      @change="forceEntitiesByTypeForMintUpdateTrigger++"
+                      style="width: 20px; height: 20px; cursor: pointer;"
+                    />
+                  </td>
+
                   <td class="entity-rec-td" v-if="!entity.qid">
 
 
@@ -3072,10 +3802,11 @@ export default {
 
 
                   </td>
+
                   <td>{{ entity.blocks.length}} block{{ entity.blocks.length === 1 ? '' : 's' }}</td>
                   <td style="white-space: nowrap;">
 
- 
+
                     <button :disabled="entity.hidden" class="button reconcile-button" @click="details(entity)">{{ activeEntity && activeEntity.internal_id === entity.internal_id ? 'Hide' : 'Details' }}</button>
                     <button :disabled="entity.hidden" class="button reconcile-button" @click="runSemlab(entity)">SemLab</button>
                     <button :disabled="entity.hidden" class="button reconcile-button" @click="runWikidata(entity)">Wiki</button>
@@ -3138,8 +3869,8 @@ export default {
           </tbody>
         </table>
 
-        <!-- Mint Tab Content -->
-        <div v-if="activeTab === 'mint'">
+        <!-- Import Wikidata Tab Content -->
+        <div v-if="activeTab === 'importWikidata'">
           <div class="field" style="margin-bottom: 1.5rem;">
             <label class="label">Default Project for Minting</label>
             <div class="control">
@@ -3180,13 +3911,13 @@ export default {
                       <!-- Auth Label (single) -->
                       <div class="column is-2">
                         <label class="label is-small">Auth Label</label>
-                        <input class="input is-small" type="text" v-model="entity.mintData.authLabel">
+                        <input class="input is-small" type="text" v-model="entity.mintData.authLabel" @input="updateAuthLabel($event, entity)">
                       </div>
-                      
+
                       <!-- Description (single) -->
                       <div class="column is-3">
                         <label class="label is-small">Description</label>
-                        <input class="input is-small" type="text" v-model="entity.mintData.description">
+                        <input class="input is-small" type="text" v-model="entity.mintData.description" @input="updateDescription($event, entity)">
                       </div>
                       
                       <!-- Variant Labels (multiple) -->
@@ -3194,15 +3925,15 @@ export default {
                         <label class="label is-small">Variant Labels</label>
                         <div v-for="(variant, vIndex) in entity.mintData.variantLabel" :key="'variant-' + vIndex" class="field has-addons">
                           <div class="control is-expanded">
-                            <input class="input is-small" type="text" v-model="entity.mintData.variantLabel[vIndex]">
+                            <input class="input is-small" type="text" @change="updateVariantLabel($event, entity, vIndex)" v-model="entity.mintData.variantLabel[vIndex]">
                           </div>
                           <div class="control">
-                            <button class="button is-small is-danger" @click="removeFromArray(entity.mintData.variantLabel, vIndex)">
+                            <button class="button is-small is-danger" @click="removeVariantLabel(entity,vIndex)">
                               <font-awesome-icon :icon="['fas', 'times']" />
                             </button>
                           </div>
                         </div>
-                        <button class="button is-small is-success" @click="entity.mintData.variantLabel.push('')">
+                        <button class="button is-small is-success" @click="addToVariantLabelArray(entity)">
                           <font-awesome-icon :icon="['fas', 'plus']" /> Add
                         </button>
                       </div>
@@ -3210,10 +3941,12 @@ export default {
                       <!-- Projects (multiple) -->
                       <div class="column is-2">
                         <label class="label is-small">Projects</label>
+
                         <div v-for="(proj, pIndex) in entity.mintData.project" :key="'project-' + pIndex" class="field has-addons">
                           <div class="control is-expanded">
                             <div class="select is-small is-fullwidth">
-                              <select v-model="entity.mintData.project[pIndex]">
+                              <select @change="addProjectUpdate($event, entity,pIndex)" v-model="entity.mintData.project[pIndex]">
+                                <option :value="null">Select a project...</option>
                                 <option v-for="project in projects" :key="project.id" :value="project.id">
                                   {{ project.label }}
                                 </option>
@@ -3226,26 +3959,55 @@ export default {
                             </button>
                           </div>
                         </div>
-                        <button class="button is-small is-success" @click="entity.mintData.project.push('')">
+                        <button class="button is-small is-success" @click="addToProjectArray(entity)">
                           <font-awesome-icon :icon="['fas', 'plus']" /> Add
                         </button>
                       </div>
-                      
-                      <!-- Instance Of (multiple) -->
-                      <div class="column is-2">
+
+                      <!-- Instance Of (multiple with typeahead) -->
+                      <div class="column is-3">
                         <label class="label is-small">Instance Of</label>
-                        <div v-for="(inst, iIndex) in entity.mintData.instanceOf" :key="'instance-' + iIndex" class="field has-addons">
-                          <div class="control is-expanded">
-                            <input class="input is-small" type="text" v-model="entity.mintData.instanceOf[iIndex]" placeholder="QID">
+                        <div v-for="(instanceOfId, iIndex) in entity.mintData.instanceOf" :key="'instanceOf-' + iIndex" class="field has-addons">
+                          <div class="control is-expanded instance-of-typeahead-wrapper">
+                            <input
+                              class="input is-small"
+                              type="text"
+                              v-model="instanceOfSearchQueries[entity.internal_id + '-' + iIndex]"
+                              @input="searchInstanceOf(entity.internal_id, $event.target.value, iIndex)"
+                              @focus="focusInstanceOfField(entity.internal_id, iIndex, instanceOfId)"
+                              @keydown="handleInstanceOfKeydown($event, entity.internal_id, iIndex)"
+                              :placeholder="instanceOfId ? getInstanceOfLabel(instanceOfId) : 'Search for class...'"
+                            />
+                            <div
+                              v-if="instanceOfSearchResults[entity.internal_id + '-' + iIndex] && instanceOfSearchResults[entity.internal_id + '-' + iIndex].length > 0"
+                              class="dropdown-content is-active"
+                            >
+                              <a
+                                v-for="(item, index) in instanceOfSearchResults[entity.internal_id + '-' + iIndex]"
+                                :key="item.qid"
+                                class="dropdown-item"
+                                :class="{ 'is-active': instanceOfSelectedIndex[entity.internal_id + '-' + iIndex] === index }"
+                                @mousedown.prevent="selectInstanceOfItem(entity, iIndex, item)"
+                                @mouseenter="instanceOfSelectedIndex[entity.internal_id + '-' + iIndex] = index"
+                              >
+                                <div class="autocomplete-item-content">
+                                  <div class="autocomplete-item-text">
+                                    <strong>{{ item.label }}</strong>
+                                    <span class="lite-text"> ({{ item.qid }})</span>
+                                  </div>
+                                </div>
+                              </a>
+                            </div>
                           </div>
                           <div class="control">
-                            <button class="button is-small is-danger" @click="removeFromArray(entity.mintData.instanceOf, iIndex)">
+                            <button class="button is-small is-danger" @click="removeFromInstanceOfArray(entity, iIndex)">
                               <font-awesome-icon :icon="['fas', 'times']" />
                             </button>
                           </div>
                         </div>
-                        <button class="button is-small is-success" @click="entity.mintData.instanceOf.push('')">
-                          <font-awesome-icon :icon="['fas', 'plus']" /> Add
+                        <button class="button is-small is-success" @click="addToInstanceOfArray(entity)">
+                          <font-awesome-icon :icon="['fas', 'plus']" />
+                          Add Instance Of
                         </button>
                       </div>
                       
@@ -3260,7 +4022,23 @@ export default {
 
                   </td>
                   <td class="mint-table-action">
-                    Mint
+                    <button
+                      class="button"
+                      :class="entity.minted ? 'is-success' : 'is-primary'"
+                      @click="mintFromWikidata(entity)"
+                      :disabled="entity.minted"
+                    >
+                      <font-awesome-icon :icon="['fas', entity.minted ? 'thumbs-up' : 'burst']" />
+                      <span class="minted-icon-text">{{ entity.minted ? 'Minted' : 'Mint' }}</span>
+                    </button>
+                    <div v-if="entity.minted && entity.qid">
+                      <a :href="'https://base.semlab.io/entity/' + entity.qid" target="_blank" class="is-size-7">
+                        View on SemLab
+                      </a>
+                    </div>
+                    <div v-if="entity.mintValidationError" class="has-text-danger is-size-7" style="margin-top: 0.5rem;">
+                      {{ entity.mintValidationError }}
+                    </div>
                   </td>
 
                   <!-- Add more columns as needed -->
@@ -3278,10 +4056,279 @@ export default {
         </table>
         </div>
 
+        <!-- Mint Tab Content -->
+        <div v-if="activeTab === 'mint'">
+          <div class="field" style="margin-bottom: 1.5rem;">
+            <label class="label">Default Project for Minting</label>
+            <div class="control">
+              <div class="select is-fullwidth">
+                <select v-model="defaultProject">
+                  <option :value="null">Select a project...</option>
+                  <option v-for="project in projects" :key="project.id" :value="project.id">
+                    {{ project.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <table class="table is-striped is-hoverable is-fullwidth">
+          <thead>
+            <tr>
+              <th>Entity</th>
+              <th>Data</th>
+              <th>Action</th>
+              <!-- Add more columns as needed -->
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="(entities, type) in entitiesByTypeForTodoMint" :key="'mint-type-' + type">
+              <tr>
+                <td colspan="4" class="entity-table-class-header">
+                  <strong>{{ type }}</strong> <span class="lite-text">[{{ entities.length }}]</span>
+                </td>
+              </tr>
+              <template v-for="entity in entities" :key="'mint-entity-' + entity.internal_id">
+                <tr>
+                  <td class="mint-table-label">{{ entity.entity }}</td>
+                  <td class="mint-table-data" >
+
+                    <div class="columns is-multiline">
+                      <!-- Auth Label (single) -->
+                      <div class="column is-2">
+                        <label class="label is-small">Auth Label</label>
+                        <input class="input is-small" type="text" v-model="entity.mintData.authLabel" @input="updateAuthLabel($event, entity)">
+                      </div>
+
+                      <!-- Description (single) -->
+                      <div class="column is-3">
+                        <label class="label is-small">Description</label>
+                        <input class="input is-small" type="text" v-model="entity.mintData.description" @input="updateDescription($event, entity)">
+                      </div>
+
+                      <!-- Variant Labels (multiple) -->
+                      <div class="column is-2">
+                        <label class="label is-small">Variant Labels</label>
+                        <div v-for="(variant, vIndex) in entity.mintData.variantLabel" :key="'variant-' + vIndex" class="field has-addons">
+                          <div class="control is-expanded">
+                            <input class="input is-small" type="text" @change="updateVariantLabel($event, entity, vIndex)" v-model="entity.mintData.variantLabel[vIndex]">
+                          </div>
+                          <div class="control">
+                            <button class="button is-small is-danger" @click="removeVariantLabel(entity,vIndex)">
+                              <font-awesome-icon :icon="['fas', 'times']" />
+                            </button>
+                          </div>
+                        </div>
+                        <button class="button is-small is-success" @click="addToVariantLabelArray(entity)">
+                          <font-awesome-icon :icon="['fas', 'plus']" />
+                          Add Variant
+                        </button>
+                      </div>
+
+                      <!-- Projects (multiple with typeahead) -->
+                      <div class="column is-2">
+                        <label class="label is-small">Projects</label>
+                        <div v-for="(projectId, pIndex) in entity.mintData.project" :key="'project-' + pIndex" class="field has-addons">
+                          <div class="control is-expanded">
+                            <div class="select is-small is-fullwidth">
+                              <select v-model="entity.mintData.project[pIndex]">
+                                <option :value="null">Select...</option>
+                                <option v-for="project in projects" :key="project.id" :value="project.id">
+                                  {{ project.label }}
+                                </option>
+                              </select>
+                            </div>
+                          </div>
+                          <div class="control">
+                            <button class="button is-small is-danger" @click="removeFromProjectArray(entity, pIndex)">
+                              <font-awesome-icon :icon="['fas', 'times']" />
+                            </button>
+                          </div>
+                        </div>
+                        <button class="button is-small is-success" @click="addToProjectArray(entity)">
+                          <font-awesome-icon :icon="['fas', 'plus']" />
+                          Add Project
+                        </button>
+                      </div>
+
+                      <!-- Instance Of (multiple with typeahead) -->
+                      <div class="column is-3">
+                        <label class="label is-small">Instance Of</label>
+                        <div v-for="(instanceOfId, iIndex) in entity.mintData.instanceOf" :key="'instanceOf-' + iIndex" class="field has-addons">
+                          <div class="control is-expanded instance-of-typeahead-wrapper">
+                            <input
+                              class="input is-small"
+                              type="text"
+                              v-model="instanceOfSearchQueries[entity.internal_id + '-' + iIndex]"
+                              @input="searchInstanceOf(entity.internal_id, $event.target.value, iIndex)"
+                              @focus="focusInstanceOfField(entity.internal_id, iIndex, instanceOfId)"
+                              @keydown="handleInstanceOfKeydown($event, entity.internal_id, iIndex)"
+                              :placeholder="instanceOfId ? getInstanceOfLabel(instanceOfId) : 'Search for class...'"
+                            />
+                            <div
+                              v-if="instanceOfSearchResults[entity.internal_id + '-' + iIndex] && instanceOfSearchResults[entity.internal_id + '-' + iIndex].length > 0"
+                              class="dropdown-content is-active"
+                            >
+                              <a
+                                v-for="(item, index) in instanceOfSearchResults[entity.internal_id + '-' + iIndex]"
+                                :key="item.qid"
+                                class="dropdown-item"
+                                :class="{ 'is-active': instanceOfSelectedIndex[entity.internal_id + '-' + iIndex] === index }"
+                                @mousedown.prevent="selectInstanceOfItem(entity, iIndex, item)"
+                                @mouseenter="instanceOfSelectedIndex[entity.internal_id + '-' + iIndex] = index"
+                              >
+                                <div class="autocomplete-item-content">
+                                  <div class="autocomplete-item-text">
+                                    <strong>{{ item.label }}</strong>
+                                    <span class="lite-text"> ({{ item.qid }})</span>
+                                  </div>
+                                </div>
+                              </a>
+                            </div>
+                          </div>
+                          <div class="control">
+                            <button class="button is-small is-danger" @click="removeFromInstanceOfArray(entity, iIndex)">
+                              <font-awesome-icon :icon="['fas', 'times']" />
+                            </button>
+                          </div>
+                        </div>
+                        <button class="button is-small is-success" @click="addToInstanceOfArray(entity)">
+                          <font-awesome-icon :icon="['fas', 'plus']" />
+                          Add Instance Of
+                        </button>
+                      </div>
+                    </div>
+
+                  </td>
+                  <td class="mint-table-action">
+                    <button
+                      class="button"
+                      :class="entity.minted ? 'is-success' : 'is-primary'"
+                      @click="mintFromWikidata(entity)"
+                      :disabled="entity.minted"
+                    >
+                      <font-awesome-icon :icon="['fas', entity.minted ? 'thumbs-up' : 'burst']" />
+                      <span class="minted-icon-text">{{ entity.minted ? 'Minted' : 'Mint' }}</span>
+                    </button>
+                    <div v-if="entity.minted && entity.qid">
+                      <a :href="'https://base.semlab.io/entity/' + entity.qid" target="_blank" class="is-size-7">
+                        View on SemLab
+                      </a>
+                    </div>
+                    <div v-if="entity.mintValidationError" class="has-text-danger is-size-7" style="margin-top: 0.5rem;">
+                      {{ entity.mintValidationError }}
+                    </div>
+                  </td>
+
+                  <!-- Add more columns as needed -->
+                </tr>
+              </template>
+            </template>
+            <template v-if="Object.keys(entitiesByTypeForTodoMint).length === 0">
+              <tr>
+                <td colspan="4" class="has-text-centered">
+                  <p class="has-text-grey">No entities marked for minting. Check the "To Mint" checkbox in the Reconcile tab for entities you want to mint.</p>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        </div>
+
         <!-- Data Tab Content -->
         <div v-if="activeTab === 'data'" class="data-tab-content" style="padding: 20px; min-height: 400px;">
-          <!-- Data content will go here -->
-          <p class="has-text-grey">Data view coming soon...</p>
+          <h3 class="title is-4">Download Entities</h3>
+          <p class="subtitle is-6">Export your entities data in JSON or CSV format with various filtering options</p>
+
+          <div class="columns is-multiline" style="margin-top: 2rem;">
+            <!-- All Entities -->
+            <div class="column is-6">
+              <div class="box">
+                <h4 class="title is-5">
+                  <font-awesome-icon :icon="['fas', 'database']" style="margin-right: 0.5rem;" />
+                  All Entities
+                </h4>
+                <p class="subtitle is-6">Download all entities ({{ Object.keys(entities).length }} total)</p>
+                <div class="buttons">
+                  <button class="button is-primary" @click="downloadJSON('all')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download JSON
+                  </button>
+                  <button class="button is-info" @click="downloadCSV('all')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download CSV
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Reconciled Entities -->
+            <div class="column is-6">
+              <div class="box">
+                <h4 class="title is-5">
+                  <font-awesome-icon :icon="['fas', 'circle-nodes']" style="margin-right: 0.5rem;" />
+                  Reconciled Entities
+                </h4>
+                <p class="subtitle is-6">Entities with Wikibase or Wikidata matches</p>
+                <div class="buttons">
+                  <button class="button is-primary" @click="downloadJSON('reconciled')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download JSON
+                  </button>
+                  <button class="button is-info" @click="downloadCSV('reconciled')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download CSV
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Wikibase Entities -->
+            <div class="column is-6">
+              <div class="box">
+                <h4 class="title is-5">
+                  <font-awesome-icon :icon="['fas', 'link']" style="margin-right: 0.5rem;" />
+                  Wikibase Entities Only
+                </h4>
+                <p class="subtitle is-6">Entities with SemLab QID</p>
+                <div class="buttons">
+                  <button class="button is-primary" @click="downloadJSON('wikibase')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download JSON
+                  </button>
+                  <button class="button is-info" @click="downloadCSV('wikibase')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download CSV
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Wikidata Entities -->
+            <div class="column is-6">
+              <div class="box">
+                <h4 class="title is-5">
+                  <font-awesome-icon :icon="['fab', 'wikipedia-w']" style="margin-right: 0.5rem;" />
+                  Wikidata Entities Only
+                </h4>
+                <p class="subtitle is-6">Entities with Wikidata QID</p>
+                <div class="buttons">
+                  <button class="button is-primary" @click="downloadJSON('wikidata')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download JSON
+                  </button>
+                  <button class="button is-info" @click="downloadCSV('wikidata')">
+                    <font-awesome-icon :icon="['fas', 'download']" style="margin-right: 0.5rem;" />
+                    Download CSV
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="notification is-info is-light" style="margin-top: 2rem;">
+            <p><strong>Note:</strong> Downloaded files only include the fields that are saved to the backend (same as the Save Work function). Files are named with the current date for easy organization.</p>
+          </div>
         </div>
 
 <!-- 
@@ -3803,20 +4850,27 @@ label{
 .type-is-aligned .qid-display {
   margin-left: 5px;
   display: inline;
+  opacity: 1;
+  transition: opacity 0.2s;
 }
 
 .type-is-aligned .type-string-display {
   margin-left: 5px;
-  display: none;
+  display: inline;
   text-decoration: underline;
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
 }
 
 .type-is-aligned:hover .qid-display {
-  display: none;
+  opacity: 0;
 }
 
 .type-is-aligned:hover .type-string-display {
-  display: inline;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .type-alignment-select {
@@ -3886,6 +4940,15 @@ label{
 .mint-table-action{
   width: 50px;
   max-width: 50px;
+}
+
+/* Fix button height in mint table to match inputs */
+.mint-table-data .field.has-addons .button.is-small {
+  height: 1.875rem; /* Match Bulma's is-small input height (30px) */
+}
+
+.minted-icon-text{
+  margin-left: 0.5em;
 }
 
 </style>

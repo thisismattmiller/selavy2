@@ -5,7 +5,8 @@ export const useUserStore = defineStore('user', {
     user: null,
     isAuthenticated: false,
     loading: false,
-    error: null
+    error: null,
+    login_token: null
   }),
 
   getters: {

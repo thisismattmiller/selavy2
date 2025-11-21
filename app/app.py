@@ -10,17 +10,35 @@ from typing import Dict
 import glob
 from datetime import datetime
 import requests
+import fcntl
+from contextlib import contextmanager
+
+
+@contextmanager
+def file_lock(filepath):
+    """Context manager for file locking to prevent race conditions."""
+    lock_path = filepath + '.lock'
+    with open(lock_path, 'w') as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 # from lib.doc_diff import build_doc_diffs
 from lib.doc_diff_new import build_doc_diffs
 
 
 from lib.doc_llm_util import judge_diff
-from lib.doc_llm_util import ask_llm_reconcile_project_wide, ask_llm_structured, ask_llm_reconcile_build_search_order, ask_llm_compare_wikidata_entity, ask_llm_normalize_labels
+from lib.doc_llm_util import ask_llm_reconcile_project_wide, ask_llm_structured, ask_llm_reconcile_build_search_order, ask_llm_compare_wikidata_entity, ask_llm_normalize_labels, extract_relationships
 
 from lib.doc_util import return_ner
 
 from lib.base_util import search_base
+
+
+from lib.base_util import wikibase_mint_entity
+
 
 client = genai.Client(
     api_key=os.environ.get("GOOGLE_GENAI"),
@@ -87,9 +105,34 @@ def handle_disconnect(reason):
 def handle_geminiTokenCount(text):
     total_tokens = client.models.count_tokens(
         model=GOOGLE_GEMINI_MODEL, contents=text
-    )    
+    )
     return {'success': True, 'error': None, 'token_count': total_tokens.total_tokens, 'model': GOOGLE_GEMINI_MODEL, 'limit': output_limits[GOOGLE_GEMINI_MODEL] }
 
+
+@socketio.on('wikibase_mint_entity')
+def handle_wikibase_mint_entity(entity):
+    print(entity, flush=True)
+
+    print("user_store",user_store, flush=True)
+
+    if 'login_token' not in entity:
+        return {'success': False, 'error': 'No login token provided'}
+    
+    for key in user_store:
+        if user_store[key]['login_token'] == entity['login_token']:
+            request.sid = key
+            break
+
+    if request.sid not in user_store:
+        print("User not logged in:", request.sid, flush=True)
+        return {'success': False, 'error': 'User not logged in, try reloading the page.'}
+    
+    print("user_store[request.sid]",user_store[request.sid], flush=True)
+
+    print("entity",entity, flush=True   )
+    results = wikibase_mint_entity(user_store[request.sid], entity, user_store, request.sid)
+    print("results",results, flush=True)
+    return results
 
 
 @socketio.on('login')
@@ -143,7 +186,8 @@ def handle_login_validate(login_token):
 
     # look through the user_store for the token, if found they are logged in and don't need to again    
     for key in user_store:
-        if user_store[key]['login_token'] == login_token:            
+        if user_store[key]['login_token'] == login_token:      
+            print("User validated:", user_store[key]['login_data']['username'], flush=True)      
             return {'success': True, 'error': None, 'user': user_store[key]['login_data']['username'] }
     
     return {'success': False, 'error': 'Not Found'}
@@ -284,19 +328,79 @@ def handle_update_document_markup(job_data):
         if job_data["user"] != None:
             job_data["user"] = job_data["user"].lower()
 
+    data_file = f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'
+
     # check if the job exists
-    if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'):
-        file_data = None
-        with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json') as f:
+    if not os.path.exists(data_file):
+        return {'success': False, 'error': 'Doc not found'}
+
+    with file_lock(data_file):
+        with open(data_file) as f:
             file_data = json.load(f)
-        
+
         file_data['text_markup'] = job_data['text_markup']
 
-        json.dump(file_data, open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json','w'), indent=2)
+        with open(data_file, 'w') as f:
+            json.dump(file_data, f, indent=2)
+
+    return {'success': True, 'error': None}
+
+
+@socketio.on('update_text_markup')
+def handle_update_text_markup(data):
+    """
+    Update text_markup field in job JSON file.
+
+    Args:
+        data: dict with 'doc', 'job_id', 'text', and 'user' keys
+
+    Returns:
+        dict with 'success' and 'error' keys
+    """
+    try:
+        job_id = data.get('job_id') or data.get('doc')
+        text_markup = data.get('text')
+        user = data.get('user')
+
+        if not job_id or text_markup is None:
+            return {'success': False, 'error': 'Missing job_id or text'}
+
+        # Normalize username
+        if user:
+            user = user.lower()
+
+        # Build the job file path
+        if user:
+            job_file_path = f'/data/jobs/{user}/{job_id}.json'
+        else:
+            # If no user provided, search all user directories
+            job_file_path = None
+            for user_dir in glob.glob('/data/jobs/*'):
+                potential_path = f'{user_dir}/{job_id}.json'
+                if os.path.exists(potential_path):
+                    job_file_path = potential_path
+                    break
+
+        if not job_file_path or not os.path.exists(job_file_path):
+            return {'success': False, 'error': f'Job {job_id} not found'}
+
+        with file_lock(job_file_path):
+            # Load the job file
+            with open(job_file_path, 'r') as f:
+                job_data = json.load(f)
+
+            # Update text_markup
+            job_data['text_markup'] = text_markup
+
+            # Save the job file
+            with open(job_file_path, 'w') as f:
+                json.dump(job_data, f, indent=2)
+
         return {'success': True, 'error': None}
 
-    else:
-        return {'success': False, 'error': 'Doc not found'}
+    except Exception as e:
+        print(f"Error updating text_markup: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
 
 
 
@@ -465,6 +569,17 @@ def handle_ask_llm_compare_wikidata_entity(prompt):
     response = ask_llm_compare_wikidata_entity(prompt)
     return response
 
+@socketio.on('extract_relationships')
+def handle_extract_relationships(data):
+    print("Extracting relationships from text:", flush=True)
+    # Extract the prompt from the data if it's a dict, otherwise use data as-is
+    if isinstance(data, dict):
+        text = data.get('prompt', '')
+    else:
+        text = data
+    response = extract_relationships(text)
+    return response
+
 @socketio.on('search_base')
 def handle_search_base(query):
     response = search_base(query)
@@ -517,23 +632,291 @@ def handle_delete_job(job_id):
 
 @socketio.on('save_ner_entities')
 def handle_save_ner_entities(data):
-
-
-
     # print(data['user'], data['job_id'], data['entities'], flush=True)
-    data_file = f'/data/jobs/{data['user'].lower()}/{data["job_id"]}.json'
+    data_file = f'/data/jobs/{data["user"].lower()}/{data["job_id"]}.json'
 
-    if os.path.exists(data_file):
-        with open(data_file) as f:
-            existing_data = json.load(f)
-            existing_data['entities'] = data['entities']
-            with open(data_file, 'w') as f:
-                json.dump(existing_data, f)
-    else:
+    if not os.path.exists(data_file):
         return {'success': False, 'error': "Job not found"}
 
+    with file_lock(data_file):
+        with open(data_file) as f:
+            existing_data = json.load(f)
+        existing_data['entities'] = data['entities']
+        with open(data_file, 'w') as f:
+            json.dump(existing_data, f)
 
     return {'success': True, 'error': None}
+
+
+@socketio.on('save_convenience_entities')
+def handle_save_convenience_entities(data):
+    """
+    Save convenience_entities to the job JSON file.
+
+    Args:
+        data: dict with 'user', 'doc', and 'convenience_entities' keys
+
+    Returns:
+        dict with 'success' and 'error' keys
+    """
+    try:
+        document_id = data.get('doc')
+        user = data.get('user')
+        convenience_entities = data.get('convenience_entities', [])
+
+        if not document_id:
+            return {'success': False, 'error': 'Missing doc'}
+
+        if user:
+            user = user.lower()
+        else:
+            return {'success': False, 'error': 'Missing user'}
+
+        data_file = f'/data/jobs/{user}/{document_id}.json'
+
+        if not os.path.exists(data_file):
+            return {'success': False, 'error': 'Job not found'}
+
+        with file_lock(data_file):
+            with open(data_file, 'r') as f:
+                existing_data = json.load(f)
+
+            existing_data['convenience_entities'] = convenience_entities
+
+            with open(data_file, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+
+        return {'success': True, 'error': None}
+
+    except Exception as e:
+        print(f"Error saving convenience_entities: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+
+@socketio.on('get_document_meta')
+def handle_get_document_meta(data):
+    """
+    Get document meta object.
+
+    Args:
+        data: dict with 'user' and 'doc' keys
+
+    Returns:
+        dict with 'success', 'error', and 'meta' keys
+    """
+    try:
+        document_id = data.get('doc')
+        user = data.get('user')
+
+        if not document_id:
+            return {'success': False, 'error': 'Missing doc'}
+
+        if user:
+            user = user.lower()
+
+        data_file = f'/data/jobs/{user}/{document_id}.json'
+
+        if not os.path.exists(data_file):
+            return {'success': False, 'error': 'Job not found'}
+
+        with open(data_file, 'r') as f:
+            job_data = json.load(f)
+
+        meta = job_data.get('meta', {})
+
+        return {'success': True, 'error': None, 'meta': meta}
+
+    except Exception as e:
+        print(f"Error getting document meta: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+
+@socketio.on('update_document_meta')
+def handle_update_document_meta(data):
+    """
+    Update document meta object (merges keys).
+
+    Args:
+        data: dict with 'user', 'doc', and 'meta' keys
+
+    Returns:
+        dict with 'success' and 'error' keys
+    """
+    try:
+        document_id = data.get('doc')
+        user = data.get('user')
+        meta_update = data.get('meta', {})
+
+        if not document_id:
+            return {'success': False, 'error': 'Missing doc'}
+
+        if user:
+            user = user.lower()
+        else:
+            return {'success': False, 'error': 'Missing user'}
+
+        data_file = f'/data/jobs/{user}/{document_id}.json'
+
+        if not os.path.exists(data_file):
+            return {'success': False, 'error': 'Job not found'}
+
+        with file_lock(data_file):
+            with open(data_file, 'r') as f:
+                existing_data = json.load(f)
+
+            if 'meta' not in existing_data:
+                existing_data['meta'] = {}
+
+            # Merge in the new keys
+            for key, value in meta_update.items():
+                existing_data['meta'][key] = value
+
+            with open(data_file, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+
+        return {'success': True, 'error': None}
+
+    except Exception as e:
+        print(f"Error updating document meta: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+
+@socketio.on('get_convenience_entities')
+def handle_get_convenience_entities(data):
+    """
+    Get convenience_entities for a given document.
+
+    Args:
+        data: dict with 'user' and 'doc' keys
+
+    Returns:
+        dict with 'success', 'error', and 'convenience_entities' keys
+    """
+    try:
+        document_id = data.get('doc')
+        user = data.get('user')
+
+        if not document_id:
+            return {'success': False, 'error': 'Missing doc'}
+
+        if user:
+            user = user.lower()
+
+        data_file = f'/data/jobs/{user}/{document_id}.json'
+
+        if not os.path.exists(data_file):
+            return {'success': False, 'error': 'Job not found'}
+
+        with open(data_file, 'r') as f:
+            job_data = json.load(f)
+
+        convenience_entities = job_data.get('convenience_entities', [])
+
+        return {'success': True, 'error': None, 'convenience_entities': convenience_entities}
+
+    except Exception as e:
+        print(f"Error getting convenience_entities: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+
+@socketio.on('get_triples')
+def handle_get_triples(data):
+    """
+    Get triples data for a given document.
+
+    Args:
+        data: dict with 'documentId' (or 'doc') and 'user' keys
+
+    Returns:
+        dict with 'success', 'error', and 'triples' keys
+    """
+    try:
+        document_id = data.get('documentId') or data.get('doc')
+        user = data.get('user')
+
+        if not document_id:
+            return {'success': False, 'error': 'Missing documentId'}
+
+        # Normalize username
+        if user:
+            user = user.lower()
+
+        # Build the job file path
+        data_file = f'/data/jobs/{user}/{document_id}.json'
+
+        if not os.path.exists(data_file):
+            return {'success': False, 'error': 'Job not found'}
+
+        # Load job data
+        with open(data_file, 'r') as f:
+            job_data = json.load(f)
+
+        # Get triples data (empty dict if not present)
+        triples = job_data.get('triples', {})
+
+        return {'success': True, 'error': None, 'triples': triples}
+
+    except Exception as e:
+        print(f"Error getting triples: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+
+@socketio.on('save_triples')
+def handle_save_triples(data):
+    """
+    Save triples data to the job JSON file.
+
+    Args:
+        data: dict with 'documentId', 'blocks', and 'user' keys
+        blocks: array of objects with 'blockId' and 'triples' keys
+
+    Returns:
+        dict with 'success' and 'error' keys
+    """
+    try:
+        document_id = data.get('documentId')
+        blocks = data.get('blocks', [])
+        user = data.get('user')
+
+        if not document_id:
+            return {'success': False, 'error': 'Missing documentId'}
+
+        # Normalize username
+        if user:
+            user = user.lower()
+        else:
+            return {'success': False, 'error': 'Missing user'}
+
+        # Build the job file path
+        data_file = f'/data/jobs/{user}/{document_id}.json'
+
+        if not os.path.exists(data_file):
+            return {'success': False, 'error': 'Job not found'}
+
+        with file_lock(data_file):
+            # Load existing job data
+            with open(data_file, 'r') as f:
+                existing_data = json.load(f)
+
+            # Update triples data - store by blockId for easy lookup
+            if 'triples' not in existing_data:
+                existing_data['triples'] = {}
+
+            # Update triples for each block
+            for block in blocks:
+                block_id = str(block.get('blockId'))
+                triples = block.get('triples', [])
+                existing_data['triples'][block_id] = triples
+
+            # Save the updated job data
+            with open(data_file, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+
+        return {'success': True, 'error': None}
+
+    except Exception as e:
+        print(f"Error saving triples: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
 
 
 @socketio.on('search_semlab_autocomplete')
@@ -542,9 +925,9 @@ def handle_search_semlab_autocomplete(search_term):
         url = f"https://base.semlab.io/w/api.php?action=wbsearchentities&search={search_term}&format=json&errorformat=plaintext&language=en&uselang=en&type=item"
         response = requests.get(url)
         response.raise_for_status()
-        
+
         return {'success': True, 'error': None, 'data': response.json()}
-        
+
     except requests.exceptions.RequestException as e:
         return {'success': False, 'error': str(e), 'data': None}
 

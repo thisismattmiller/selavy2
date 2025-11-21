@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import WorkLMMReview from '../views/WorkLMMReview.vue'
 import WorkNER from '../views/WorkNER.vue'
+import WorkBlocks from '../views/WorkBlocks.vue'
 
 
 
@@ -22,10 +23,16 @@ const router = createRouter({
     {
       path: '/ner/:documentId',
       name: 'ner',
-      props: true, 
+      props: true,
       component: WorkNER,
     },
-    
+    {
+      path: '/blocks/:id',
+      name: 'blocks',
+      props: true,
+      component: WorkBlocks,
+    },
+
     {
       path: '/about',
       name: 'about',

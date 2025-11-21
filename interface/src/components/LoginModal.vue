@@ -81,7 +81,7 @@ export default {
   computed: {
    
   //  ...mapStores(useUserStore),
-   ...mapWritableState(useUserStore, ['isAuthenticated', 'user']),
+   ...mapWritableState(useUserStore, ['isAuthenticated', 'user','login_token']),
 
 
   },
@@ -104,10 +104,14 @@ export default {
         if (response.success) {
 
           window.localStorage.setItem('selavy-login-token', response.login_token)
+          this.login_token = response.login_token
+          console.log("this.login_token set to:", this.login_token)
           this.$refs.svg.style.fill = "lightgreen"
           window.setTimeout(() => {
             this.isAuthenticated = true
             this.user = this.username
+            
+
 
           }, 1000)
 

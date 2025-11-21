@@ -12,7 +12,7 @@ client = genai.Client(
 
 
 def judge_diff(diff):	 
-	model = "gemini-2.5-flash-preview-04-17"
+
 	model = GOOGLE_GEMINI_MODEL
 
 	contents = [
@@ -62,7 +62,7 @@ def judge_diff(diff):
 def ask_llm_structured(prompt):
 
 
-	model = "gemini-2.5-flash-preview-05-20"
+
 	model = GOOGLE_GEMINI_MODEL
 
 	contents = [
@@ -360,3 +360,49 @@ def ask_llm_normalize_labels(prompt):
 		print("Error decoding JSON: ", e)
 		return {'success': False, 'response': None, 'log': f"Error decoding JSON: {e} \nResponse text: {response_text}\n-------"}
 
+
+
+def extract_relationships(text):
+	"""
+	Extract relationships from text using Gemini with thinking mode.
+
+	Args:
+		text: The text to extract relationships from
+
+	Returns:
+		dict: Response with success status and extracted relationships
+	"""
+	model = "gemini-flash-latest"
+	contents = [
+		types.Content(
+			role="user",
+			parts=[
+				types.Part.from_text(text=text),
+			],
+		),
+	]
+	generate_content_config = types.GenerateContentConfig(
+		temperature=0,
+		thinking_config=types.ThinkingConfig(
+			thinking_budget=-1,
+		),
+		response_mime_type="application/json",
+	)
+
+	response_text = ""
+	for chunk in client.models.generate_content_stream(
+		model=model,
+		contents=contents,
+		config=generate_content_config,
+	):
+		print(chunk.text, end="", flush=True)
+		if chunk.text is not None:
+			response_text += chunk.text
+
+	try:
+		print("\nResponse from LLM: ", response_text, flush=True)
+		response_json = json.loads(response_text)
+		return {'success': True, 'response': response_json}
+	except json.JSONDecodeError as e:
+		print("Error decoding JSON: ", e, flush=True)
+		return {'success': False, 'response': None, 'error': f"Error decoding JSON: {e}\nResponse text: {response_text}"}

@@ -8,7 +8,8 @@ export const useConnectionStore = defineStore("connection", {
 
   actions: {
     bindEvents() {
-      socket.on("connect", () => {
+      socket.on("connect", (values) => {
+        console.log("Connected to server",values);
         this.isConnected = true;
       });
 

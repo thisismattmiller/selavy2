@@ -5,6 +5,155 @@ import requests
 from bs4 import BeautifulSoup
 from typing import List, Dict, Union, Optional
 
+
+
+import re
+import json
+import os
+import requests
+from wikibaseintegrator import WikibaseIntegrator
+
+from wikibaseintegrator.datatypes import Item
+from wikibaseintegrator.datatypes import String
+from wikibaseintegrator import wbi_login
+from wikibaseintegrator.wbi_login import LoginError
+
+
+
+
+def wikibase_mint_entity(user_data, entity, user_store, request_sid):
+    try:
+        login_instance = user_data['login_instance']
+        login_token = user_data['login_token']
+        wbi = WikibaseIntegrator(login=login_instance)
+
+        # Extract mintData from the entity
+        mint_data = entity['entity'].get('mintData', {})
+
+        # Create a new item
+        new_item = wbi.item.new()
+
+        # Set label (authLabel)
+        if mint_data.get('authLabel'):
+            new_item.labels.set('en', mint_data['authLabel'])
+
+        # Set description
+        if mint_data.get('description'):
+            new_item.descriptions.set('en', mint_data['description'])
+
+        # Set aliases (variantLabel, removing any nulls)
+        if mint_data.get('variantLabel'):
+            variant_labels = [label for label in mint_data['variantLabel'] if label is not None]
+            for label in variant_labels:
+                new_item.aliases.set('en', label)
+
+        # Add claims
+        # P8: Wikidata QID (identifier)
+        if mint_data.get('wikidataQid') and mint_data['wikidataQid'].strip():
+            claim_p8 = String(prop_nr='P8', value=mint_data['wikidataQid'])
+            new_item.claims.add(claim_p8)
+
+        # P1: instanceOf (list of QIDs)
+        if mint_data.get('instanceOf'):
+            instance_of_list = mint_data['instanceOf']
+            if not isinstance(instance_of_list, list):
+                instance_of_list = [instance_of_list]
+            # Filter out None and empty string values
+            instance_of_list = [qid for qid in instance_of_list if qid and str(qid).strip()]
+            if instance_of_list:
+                p1_claims = [Item(prop_nr='P1', value=qid) for qid in instance_of_list]
+                new_item.claims.add(p1_claims)
+
+        # P11: project (list of QIDs)
+        if mint_data.get('project'):
+            project_list = mint_data['project']
+            if not isinstance(project_list, list):
+                project_list = [project_list]
+            # Filter out None and empty string values
+            project_list = [qid for qid in project_list if qid and str(qid).strip()]
+            if project_list:
+                p11_claims = [Item(prop_nr='P11', value=qid) for qid in project_list]
+                new_item.claims.add(p11_claims)
+
+        # Write the new item to the wikibase
+        result = new_item.write()
+
+        # Return JSON serializable response with the QID
+        return {'success': True, 'qid': result.id}
+
+    except LoginError as e:
+        # Try to re-login if login failed
+        print(f'Login failed, attempting to re-login: {e}', flush=True)
+
+        if 'login_data' in user_data:
+            login_data = user_data['login_data']
+
+            try:
+                # Re-create login instance
+                new_login_instance = wbi_login.Clientlogin(
+                    user=login_data['username'],
+                    password=login_data['password']
+                )
+
+                # Update user_store with new login instance
+                import uuid
+                new_login_token = str(uuid.uuid4())
+                user_store[request_sid] = {
+                    'login_instance': new_login_instance,
+                    'login_data': login_data,
+                    'login_token': new_login_token
+                }
+
+                # Retry the minting with new login
+                wbi = WikibaseIntegrator(login=new_login_instance)
+                mint_data = entity['entity'].get('mintData', {})
+                new_item = wbi.item.new()
+
+                if mint_data.get('authLabel'):
+                    new_item.labels.set('en', mint_data['authLabel'])
+
+                if mint_data.get('description'):
+                    new_item.descriptions.set('en', mint_data['description'])
+
+                if mint_data.get('variantLabel'):
+                    variant_labels = [label for label in mint_data['variantLabel'] if label is not None]
+                    for label in variant_labels:
+                        new_item.aliases.set('en', label)
+
+                if mint_data.get('wikidataQid') and mint_data['wikidataQid'].strip():
+                    claim_p8 = String(prop_nr='P8', value=mint_data['wikidataQid'])
+                    new_item.claims.add(claim_p8)
+
+                if mint_data.get('instanceOf'):
+                    instance_of_list = mint_data['instanceOf']
+                    if not isinstance(instance_of_list, list):
+                        instance_of_list = [instance_of_list]
+                    instance_of_list = [qid for qid in instance_of_list if qid and str(qid).strip()]
+                    if instance_of_list:
+                        p1_claims = [Item(prop_nr='P1', value=qid) for qid in instance_of_list]
+                        new_item.claims.add(p1_claims)
+
+                if mint_data.get('project'):
+                    project_list = mint_data['project']
+                    if not isinstance(project_list, list):
+                        project_list = [project_list]
+                    project_list = [qid for qid in project_list if qid and str(qid).strip()]
+                    if project_list:
+                        p11_claims = [Item(prop_nr='P11', value=qid) for qid in project_list]
+                        new_item.claims.add(p11_claims)
+
+                result = new_item.write()
+                return {'success': True, 'qid': result.id}
+
+            except Exception as retry_error:
+                return {'success': False, 'error': f'Re-login attempt failed: {str(retry_error)}'}
+        else:
+            return {'success': False, 'error': f'Login failed and no credentials available: {str(e)}'}
+
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+    
+
 def query_semlab(query_value: str) -> List[Dict[str, Optional[str]]]:
     """
     Queries the Semlab base search engine and parses the HTML results.
@@ -41,7 +190,7 @@ def query_semlab(query_value: str) -> List[Dict[str, Optional[str]]]:
 
     # Parse the HTML content
     soup = BeautifulSoup(response.text, 'html.parser')
-
+    print(response.text)
     # Find all list items that correspond to a search result
     search_results_html = soup.find_all('li', class_='mw-search-result')
     

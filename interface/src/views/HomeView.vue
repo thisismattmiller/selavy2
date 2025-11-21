@@ -30,8 +30,8 @@ export default {
 
       uiCounter: 0,
       
-      selectedModel: 'gemini-2.5-pro',
-      modelOptions: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-5'],
+      selectedModel: 'gemini-3-pro-preview',
+      modelOptions: ['gemini-3-pro-preview','gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-5'],
       additionalPromptInstructions: '',
       showAdditionalPrompt: false,
 

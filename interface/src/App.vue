@@ -33,7 +33,7 @@ export default {
    
     ...mapStores(useConnectionStore),
     ...mapState(useConnectionStore, ['isConnected']),
-    ...mapWritableState(useUserStore, ['isAuthenticated', 'user']),
+    ...mapWritableState(useUserStore, ['isAuthenticated', 'user','login_token']),
 
 
   },
@@ -55,11 +55,13 @@ export default {
   mounted() {
 
     if (window.localStorage.getItem('selavy-login-token')){
+      console.log("Validating login token...,",window.localStorage.getItem('selavy-login-token'))
       socket.emit('login_validate', window.localStorage.getItem('selavy-login-token'), (response) => {
         console.log(response)
         if (response.success) {
           this.isAuthenticated = true
           this.user = response.user
+          this.login_token = window.localStorage.getItem('selavy-login-token')
           console.log(this.isAuthenticated, this.user)
         }
       })
