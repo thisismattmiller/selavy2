@@ -4,7 +4,8 @@ import { io } from "socket.io-client";
 export const state = reactive({
   connected: false,
   fooEvents: [],
-  barEvents: []
+  barEvents: [],
+  apiKeyError: null,
 });
 
 // "undefined" means the URL will be computed from the `window.location` object
@@ -26,4 +27,8 @@ socket.on("foo", (...args) => {
 
 socket.on("bar", (...args) => {
   state.barEvents.push(args);
+});
+
+socket.on("api_key_error", (data) => {
+  state.apiKeyError = data;
 });

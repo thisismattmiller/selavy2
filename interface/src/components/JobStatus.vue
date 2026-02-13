@@ -55,6 +55,17 @@
                 </span>
               </div>
 
+              <div class="workflow-status">
+                <span class="icon-text">
+                  <span class="icon">
+                    <font-awesome-icon :icon="['fas', 'cloud-arrow-up']" />
+                  </span>
+                  <router-link :to="{ name: 'publish', params: { id: job['id'] } }">
+                    Publish
+                  </router-link>
+                </span>
+              </div>
+
             </template>
             <template v-else>
               <p></p>

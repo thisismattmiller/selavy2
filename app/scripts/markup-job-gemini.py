@@ -28,8 +28,23 @@ if 'pro' in model:
 rough_word_count_orginal = len(markup_text.split(' '))
 
 
+# Load user-specific API key if available, otherwise use the default
+user_api_key = os.environ.get("GOOGLE_GENAI")
+USER_API_KEYS_FILE = '/data/user_api_keys.json'
+if os.path.exists(USER_API_KEYS_FILE):
+    with open(USER_API_KEYS_FILE) as _f:
+        _user_keys = json.load(_f)
+    print(f"[API_KEY] user_api_keys.json loaded, users with custom keys: {list(_user_keys.keys())}", flush=True)
+    if user_name.lower() in _user_keys and 'GOOGLE_GENAI' in _user_keys[user_name.lower()]:
+        user_api_key = _user_keys[user_name.lower()]['GOOGLE_GENAI']
+        print(f"[API_KEY] Using CUSTOM key for user '{user_name}' (key ends with ...{user_api_key[-6:]})", flush=True)
+    else:
+        print(f"[API_KEY] No custom key for user '{user_name}', using DEFAULT (key ends with ...{user_api_key[-6:] if user_api_key else 'None'})", flush=True)
+else:
+    print(f"[API_KEY] user_api_keys.json not found, using DEFAULT key for user '{user_name}'", flush=True)
+
 client = genai.Client(
-    api_key=os.environ.get("GOOGLE_GENAI"),
+    api_key=user_api_key,
 )
 
 

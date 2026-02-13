@@ -5,6 +5,7 @@ import time
 import uuid
 import os
 from google import genai
+from google.genai import errors as genai_errors
 import json
 from typing import Dict
 import glob
@@ -39,10 +40,54 @@ from lib.base_util import search_base
 
 from lib.base_util import wikibase_mint_entity
 
+from lib.s3_util import upload_block_text
+from lib.publish_util import create_document_item, create_block_item, create_statement_with_reference, delete_claim, delete_block_item
+from lib.doc_llm_util import summarize_block_text
+
 
 client = genai.Client(
     api_key=os.environ.get("GOOGLE_GENAI"),
 )
+
+USER_API_KEYS_FILE = '/data/user_api_keys.json'
+
+def load_user_api_keys():
+    if os.path.exists(USER_API_KEYS_FILE):
+        with open(USER_API_KEYS_FILE) as f:
+            return json.load(f)
+    return {}
+
+def save_user_api_keys(keys):
+    with file_lock(USER_API_KEYS_FILE):
+        with open(USER_API_KEYS_FILE, 'w') as f:
+            json.dump(keys, f, indent=2)
+
+def get_user_api_key(username, key_name="GOOGLE_GENAI"):
+    """Get a user's custom API key, or fall back to the default env var."""
+    if username:
+        keys = load_user_api_keys()
+        user_keys = keys.get(username.lower(), {})
+        if key_name in user_keys and user_keys[key_name]:
+            custom_key = user_keys[key_name]
+            print(f"[API_KEY] Using CUSTOM {key_name} for user '{username}' (key ends with ...{custom_key[-6:]})", flush=True)
+            return custom_key
+    default_key = os.environ.get(key_name)
+    print(f"[API_KEY] Using DEFAULT {key_name} for user '{username}' (key ends with ...{default_key[-6:] if default_key else 'None'})", flush=True)
+    return default_key
+
+def get_genai_client(username=None):
+    """Get a genai.Client using the user's API key if available."""
+    api_key = get_user_api_key(username, "GOOGLE_GENAI")
+    return genai.Client(api_key=api_key)
+
+def get_current_username():
+    """Get the username for the current socket session from user_store."""
+    if request.sid in user_store:
+        username = user_store[request.sid].get('login_data', {}).get('username', '')
+        print(f"[API_KEY] get_current_username: sid={request.sid} -> user='{username}'", flush=True)
+        return username
+    print(f"[API_KEY] get_current_username: sid={request.sid} NOT FOUND in user_store (keys: {list(user_store.keys())})", flush=True)
+    return ''
 
 GOOGLE_GEMINI_MODEL = "gemini-2.5-flash"
 output_limits = {
@@ -50,7 +95,7 @@ output_limits = {
 }
 
 from wikibaseintegrator.wbi_config import config as wbi_config
-from wikibaseintegrator import wbi_login
+from wikibaseintegrator import wbi_login, WikibaseIntegrator
 
 wbi_config['MEDIAWIKI_API_URL'] = 'https://base.semlab.io/api.php'
 wbi_config['SPARQL_ENDPOINT_URL'] = 'https://query.semlab.io/proxy/wdqs/bigdata/namespace/wdq/sparql'
@@ -64,7 +109,27 @@ app.config['SESSION_TYPE'] = 'filesystem' # or 'redis', 'mongodb', etc.
 
 socketio = SocketIO(app,cors_allowed_origins="*")
 
-
+@socketio.on_error_default
+def default_error_handler(e):
+    """Global error handler for all Socket.IO events. Catches Google GenAI API key errors and notifies the frontend."""
+    print(f"[SOCKET_ERROR] {type(e).__name__}: {e}", flush=True)
+    if isinstance(e, genai_errors.ClientError):
+        # Extract the human-readable message from the error details
+        error_message = str(e)
+        try:
+            # Try to get the LocalizedMessage from the error response
+            if hasattr(e, 'response') and e.response is not None:
+                resp_json = e.response.json()
+                for detail in resp_json.get('error', {}).get('details', []):
+                    if detail.get('@type', '').endswith('LocalizedMessage'):
+                        error_message = detail.get('message', error_message)
+                        break
+        except Exception:
+            pass
+        print(f"[SOCKET_ERROR] Emitting api_key_error to {request.sid}: {error_message}", flush=True)
+        socketio.emit('api_key_error', {'message': error_message, 'provider': 'GOOGLE_GENAI'}, to=request.sid)
+        return  # Don't re-raise, we've handled it and notified the client
+    raise e
 
 
 # Global store for user status
@@ -101,9 +166,46 @@ def handle_disconnect(reason):
     print(f'Client disconnected, reason: {reason}', flush=True)
 
 
+@socketio.on('get_user_api_key_status')
+def handle_get_user_api_key_status(data):
+    username = data.get('user', '')
+    if not username:
+        return {'success': False, 'error': 'No user provided'}
+    keys = load_user_api_keys()
+    user_keys = keys.get(username.lower(), {})
+    has_custom_key = bool(user_keys.get('GOOGLE_GENAI'))
+    return {'success': True, 'has_custom_key': has_custom_key}
+
+@socketio.on('set_user_api_key')
+def handle_set_user_api_key(data):
+    username = data.get('user', '')
+    api_key = data.get('api_key', '')
+    if not username:
+        return {'success': False, 'error': 'No user provided'}
+    if not api_key or not api_key.strip():
+        return {'success': False, 'error': 'No API key provided'}
+    keys = load_user_api_keys()
+    keys[username.lower()] = {'GOOGLE_GENAI': api_key.strip()}
+    save_user_api_keys(keys)
+    print(f"[API_KEY] Saved custom key for user '{username.lower()}' (key ends with ...{api_key.strip()[-6:]})", flush=True)
+    return {'success': True, 'error': None}
+
+@socketio.on('remove_user_api_key')
+def handle_remove_user_api_key(data):
+    username = data.get('user', '')
+    if not username:
+        return {'success': False, 'error': 'No user provided'}
+    keys = load_user_api_keys()
+    if username.lower() in keys:
+        del keys[username.lower()]
+        save_user_api_keys(keys)
+    return {'success': True, 'error': None}
+
 @socketio.on('geminiTokenCount')
 def handle_geminiTokenCount(text):
-    total_tokens = client.models.count_tokens(
+    username = get_current_username()
+    user_client = get_genai_client(username)
+    total_tokens = user_client.models.count_tokens(
         model=GOOGLE_GEMINI_MODEL, contents=text
     )
     return {'success': True, 'error': None, 'token_count': total_tokens.total_tokens, 'model': GOOGLE_GEMINI_MODEL, 'limit': output_limits[GOOGLE_GEMINI_MODEL] }
@@ -184,12 +286,16 @@ def handle_login(login_data):
 @socketio.on('login_validate')
 def handle_login_validate(login_token):
 
-    # look through the user_store for the token, if found they are logged in and don't need to again    
+    # look through the user_store for the token, if found they are logged in and don't need to again
     for key in user_store:
-        if user_store[key]['login_token'] == login_token:      
-            print("User validated:", user_store[key]['login_data']['username'], flush=True)      
+        if user_store[key]['login_token'] == login_token:
+            print("User validated:", user_store[key]['login_data']['username'], flush=True)
+            # Map the new socket sid to this user's data so get_current_username() works
+            if request.sid != key:
+                user_store[request.sid] = user_store[key]
+                print(f"Mapped new sid {request.sid} to user {user_store[key]['login_data']['username']}", flush=True)
             return {'success': True, 'error': None, 'user': user_store[key]['login_data']['username'] }
-    
+
     return {'success': False, 'error': 'Not Found'}
 
 
@@ -340,6 +446,20 @@ def handle_update_document_markup(job_data):
 
         file_data['text_markup'] = job_data['text_markup']
 
+        # Re-parse entities from new markup to get updated block assignments
+        if 'entities' in file_data:
+            fresh_ner = return_ner(job_data['text_markup'])
+            fresh_entities = fresh_ner['entities']
+
+            for entity_id in file_data['entities']:
+                if entity_id in fresh_entities:
+                    file_data['entities'][entity_id]['blocks'] = fresh_entities[entity_id]['blocks']
+                    file_data['entities'][entity_id]['count'] = fresh_entities[entity_id]['count']
+                    file_data['entities'][entity_id]['labels'] = fresh_entities[entity_id]['labels']
+                else:
+                    file_data['entities'][entity_id]['blocks'] = []
+                    file_data['entities'][entity_id]['count'] = 0
+
         with open(data_file, 'w') as f:
             json.dump(file_data, f, indent=2)
 
@@ -408,7 +528,9 @@ def handle_update_text_markup(data):
 @socketio.on('judge_diff')
 def handle_judge_diff(diff):
     print("diff", diff, flush=True)
-    j = judge_diff(diff)
+    username = get_current_username()
+    api_key = get_user_api_key(username)
+    j = judge_diff(diff, api_key=api_key)
     print("judge_diff", j, flush=True)
     if j is None:
         return {'success': False, 'judgement': None, 'error': ''}
@@ -535,13 +657,16 @@ def handle_ask_llm(data):
     if 'prompt' not in data:
         return {'success': False, 'error': 'No prompt provided'}
 
+    username = get_current_username()
+    api_key = get_user_api_key(username)
+
     if data['task'] == 'RECONCILE_PROJECT_WIDE' or data['task'] == 'RECONCILE_BY_CLASS':
-        response = ask_llm_reconcile_project_wide(data['prompt'])
+        response = ask_llm_reconcile_project_wide(data['prompt'], api_key=api_key)
         return response
 
 
     else:
-        response = ask_llm_structured(data['prompt'])
+        response = ask_llm_structured(data['prompt'], api_key=api_key)
         print("response", response, flush=True)
         if response is None:
             return {'success': False, 'error': 'LLM error'}
@@ -553,20 +678,26 @@ def handle_ask_llm(data):
 
 @socketio.on('ask_llm_normalize_labels')
 def handle_ask_llm_normalize_labels(prompt):
-    response = ask_llm_normalize_labels(prompt)
+    username = get_current_username()
+    api_key = get_user_api_key(username)
+    response = ask_llm_normalize_labels(prompt, api_key=api_key)
     return response
 
 
 @socketio.on('ask_llm_reconcile_build_search_order')
 def handle_ask_llm_reconcile_build_search_order(prompt):
     print("Sending Proposed Build Search Order Prompt to LLM:", flush=True)
-    response = ask_llm_reconcile_build_search_order(prompt)
+    username = get_current_username()
+    api_key = get_user_api_key(username)
+    response = ask_llm_reconcile_build_search_order(prompt, api_key=api_key)
     return response
 
 @socketio.on('ask_llm_compare_wikidata_entity')
 def handle_ask_llm_compare_wikidata_entity(prompt):
     print("Sending Proposed Build Search Order Prompt to LLM:", flush=True)
-    response = ask_llm_compare_wikidata_entity(prompt)
+    username = get_current_username()
+    api_key = get_user_api_key(username)
+    response = ask_llm_compare_wikidata_entity(prompt, api_key=api_key)
     return response
 
 @socketio.on('extract_relationships')
@@ -577,7 +708,9 @@ def handle_extract_relationships(data):
         text = data.get('prompt', '')
     else:
         text = data
-    response = extract_relationships(text)
+    username = get_current_username()
+    api_key = get_user_api_key(username)
+    response = extract_relationships(text, api_key=api_key)
     return response
 
 @socketio.on('search_base')
@@ -930,6 +1063,398 @@ def handle_search_semlab_autocomplete(search_term):
 
     except requests.exceptions.RequestException as e:
         return {'success': False, 'error': str(e), 'data': None}
+
+@socketio.on('publish_get_state')
+def handle_publish_get_state(data):
+    """Load the publish state for a document."""
+    try:
+        user = data.get('user', '').lower()
+        doc = data.get('doc')
+        if not doc or not user:
+            return {'success': False, 'error': 'Missing user or doc'}
+
+        state_file = f'/data/jobs/{user}/{doc}.publish.json'
+        if not os.path.exists(state_file):
+            return {'success': True, 'error': None, 'publishState': None}
+
+        with open(state_file, 'r') as f:
+            publish_state = json.load(f)
+
+        return {'success': True, 'error': None, 'publishState': publish_state}
+    except Exception as e:
+        print(f"Error getting publish state: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_save_state')
+def handle_publish_save_state(data):
+    """Save the publish state for a document."""
+    try:
+        user = data.get('user', '').lower()
+        doc = data.get('doc')
+        publish_state = data.get('publishState', {})
+        if not doc or not user:
+            return {'success': False, 'error': 'Missing user or doc'}
+
+        state_file = f'/data/jobs/{user}/{doc}.publish.json'
+        with file_lock(state_file):
+            with open(state_file, 'w') as f:
+                json.dump(publish_state, f, indent=2)
+
+        return {'success': True, 'error': None}
+    except Exception as e:
+        print(f"Error saving publish state: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_create_document')
+def handle_publish_create_document(data):
+    """Create a document item on Wikibase."""
+    try:
+        if 'login_token' not in data:
+            return {'success': False, 'error': 'No login token provided'}
+
+        # Find user session by login token
+        sid = None
+        for key in user_store:
+            if user_store[key]['login_token'] == data['login_token']:
+                sid = key
+                break
+
+        if sid is None or sid not in user_store:
+            return {'success': False, 'error': 'User not logged in, try reloading the page.'}
+
+        login_instance = user_store[sid]['login_instance']
+        wbi = WikibaseIntegrator(login=login_instance)
+
+        label = data.get('label', '')
+        description = data.get('description', '')
+        instance_of = data.get('instanceOf', ['Q19069'])
+        projects = data.get('projects', [])
+
+        if not label:
+            return {'success': False, 'error': 'Document label is required'}
+
+        qid = create_document_item(wbi, label, description, instance_of, projects)
+        return {'success': True, 'error': None, 'qid': qid}
+
+    except Exception as e:
+        print(f"Error creating document: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_summarize_block')
+def handle_publish_summarize_block(data):
+    """Summarize a block's text using the LLM."""
+    try:
+        user = data.get('user', '')
+        block_text = data.get('blockText', '')
+
+        if not block_text:
+            return {'success': False, 'error': 'No block text provided'}
+
+        # Get user's custom API key if available
+        api_key = get_user_api_key(user, 'GOOGLE_GENAI') if user else None
+
+        summary = summarize_block_text(block_text, api_key=api_key)
+        return {'success': True, 'error': None, 'summary': summary}
+
+    except Exception as e:
+        print(f"Error summarizing block: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_upload_s3')
+def handle_publish_upload_s3(data):
+    """Upload block text to S3."""
+    try:
+        document_qid = data.get('documentQid')
+        block_id = data.get('blockId')
+        text = data.get('text', '')
+        original_text = data.get('originalText')
+        summarized = data.get('summarized', False)
+
+        if not document_qid or block_id is None:
+            return {'success': False, 'error': 'Missing documentQid or blockId'}
+
+        # Upload the main text (summary if summarized, original if not)
+        text_url = upload_block_text(document_qid, block_id, text, prefix='texts')
+
+        original_url = None
+        if summarized and original_text:
+            # Upload the original text to texts_original/
+            original_url = upload_block_text(document_qid, block_id, original_text, prefix='texts_original')
+
+        return {
+            'success': True,
+            'error': None,
+            'textUrl': text_url,
+            'originalUrl': original_url
+        }
+
+    except Exception as e:
+        print(f"Error uploading to S3: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_block_to_wikibase')
+def handle_publish_block_to_wikibase(data):
+    """Create a block item on Wikibase."""
+    try:
+        if 'login_token' not in data:
+            return {'success': False, 'error': 'No login token provided'}
+
+        sid = None
+        for key in user_store:
+            if user_store[key]['login_token'] == data['login_token']:
+                sid = key
+                break
+
+        if sid is None or sid not in user_store:
+            return {'success': False, 'error': 'User not logged in, try reloading the page.'}
+
+        login_instance = user_store[sid]['login_instance']
+        wbi = WikibaseIntegrator(login=login_instance)
+
+        block_id = data.get('blockId')
+        document_qid = data.get('documentQid')
+        projects = data.get('projects', [])
+        s3_url = data.get('s3Url', '')
+        associated_entities = data.get('associatedEntities', [])
+        document_label = data.get('documentLabel', 'Document')
+        block_text = data.get('blockText', '')
+
+        label = f'{document_label} - Block {block_id}'
+
+        block_qid = create_block_item(wbi, label, document_qid, projects, block_id, s3_url, associated_entities, block_text)
+        return {'success': True, 'error': None, 'blockQid': block_qid}
+
+    except Exception as e:
+        print(f"Error publishing block: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_unpublish_block')
+def handle_publish_unpublish_block(data):
+    """Unpublish a single block - delete its statements then the block item."""
+    try:
+        if 'login_token' not in data:
+            return {'success': False, 'error': 'No login token provided'}
+
+        sid = None
+        for key in user_store:
+            if user_store[key]['login_token'] == data['login_token']:
+                sid = key
+                break
+
+        if sid is None or sid not in user_store:
+            return {'success': False, 'error': 'User not logged in, try reloading the page.'}
+
+        login_instance = user_store[sid]['login_instance']
+        wbi = WikibaseIntegrator(login=login_instance)
+
+        block_qid = data.get('blockQid')
+        statements = data.get('statements', [])
+        deleted_statements = 0
+        errors = []
+
+        # First delete all statements for this block
+        for stmt in statements:
+            try:
+                claim_id = stmt.get('claimGuid')
+                subject_qid = stmt.get('subjectQid')
+                if claim_id and subject_qid:
+                    delete_claim(wbi, subject_qid, claim_id)
+                    deleted_statements += 1
+            except Exception as e:
+                errors.append(f"Failed to delete statement {claim_id}: {str(e)}")
+                print(f"Error deleting statement {claim_id}: {e}", flush=True)
+
+        # Then delete the block item
+        if block_qid:
+            delete_block_item(wbi, block_qid)
+
+        return {
+            'success': True,
+            'error': None,
+            'deletedStatements': deleted_statements,
+            'errors': errors if errors else None
+        }
+
+    except Exception as e:
+        print(f"Error unpublishing block: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_triple_to_wikibase')
+def handle_publish_triple_to_wikibase(data):
+    """Create a triple statement on Wikibase with a reference to the block."""
+    try:
+        if 'login_token' not in data:
+            return {'success': False, 'error': 'No login token provided'}
+
+        sid = None
+        for key in user_store:
+            if user_store[key]['login_token'] == data['login_token']:
+                sid = key
+                break
+
+        if sid is None or sid not in user_store:
+            return {'success': False, 'error': 'User not logged in, try reloading the page.'}
+
+        login_instance = user_store[sid]['login_instance']
+        wbi = WikibaseIntegrator(login=login_instance)
+
+        block_qid = data.get('blockQid')
+        triple = data.get('triple', {})
+
+        subject_qid = triple.get('subjectQid')
+        property_qid = triple.get('propertyQid')
+        object_qid = triple.get('objectQid') or None
+        object_literal = triple.get('objectLiteral')
+        contexts = triple.get('contexts', [])
+
+        print(f"Publishing triple: subject={subject_qid}, property={property_qid}, object_qid={object_qid}, object_literal={object_literal}", flush=True)
+
+        if not subject_qid or not property_qid:
+            return {'success': False, 'error': f'Missing subject or property QID (subject={subject_qid}, property={property_qid})'}
+
+        if not object_qid and object_literal is None:
+            return {'success': False, 'error': f'Missing object QID or literal value for triple: {triple}'}
+
+        claim_id = create_statement_with_reference(
+            wbi, subject_qid, property_qid, object_qid, object_literal, block_qid, contexts
+        )
+
+        return {
+            'success': True,
+            'error': None,
+            'statementId': claim_id,
+            'claimGuid': claim_id,
+            'subjectQid': subject_qid
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Error publishing triple: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_unpublish_triple')
+def handle_publish_unpublish_triple(data):
+    """Unpublish a single triple - delete its statement from Wikibase."""
+    try:
+        if 'login_token' not in data:
+            return {'success': False, 'error': 'No login token provided'}
+
+        sid = None
+        for key in user_store:
+            if user_store[key]['login_token'] == data['login_token']:
+                sid = key
+                break
+
+        if sid is None or sid not in user_store:
+            return {'success': False, 'error': 'User not logged in, try reloading the page.'}
+
+        login_instance = user_store[sid]['login_instance']
+        wbi = WikibaseIntegrator(login=login_instance)
+
+        subject_qid = data.get('subjectQid')
+        claim_guid = data.get('claimGuid')
+
+        if not subject_qid or not claim_guid:
+            return {'success': False, 'error': 'Missing subjectQid or claimGuid'}
+
+        delete_claim(wbi, subject_qid, claim_guid)
+
+        return {'success': True, 'error': None}
+
+    except Exception as e:
+        print(f"Error unpublishing triple: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+@socketio.on('publish_undo')
+def handle_publish_undo(data):
+    """Undo all published content - delete statements and block items."""
+    try:
+        if 'login_token' not in data:
+            return {'success': False, 'error': 'No login token provided'}
+
+        sid = None
+        for key in user_store:
+            if user_store[key]['login_token'] == data['login_token']:
+                sid = key
+                break
+
+        if sid is None or sid not in user_store:
+            return {'success': False, 'error': 'User not logged in, try reloading the page.'}
+
+        login_instance = user_store[sid]['login_instance']
+        wbi = WikibaseIntegrator(login=login_instance)
+
+        publish_state = data.get('publishState', {})
+        deleted_statements = 0
+        deleted_blocks = 0
+        errors = []
+
+        # Step 1: Delete all statements (must be done before deleting blocks)
+        published_statements = publish_state.get('publishedStatements', {})
+        for block_id, statements in published_statements.items():
+            for stmt in statements:
+                try:
+                    claim_id = stmt.get('claimGuid')
+                    subject_qid = stmt.get('subjectQid')
+                    if claim_id and subject_qid:
+                        delete_claim(wbi, subject_qid, claim_id)
+                        deleted_statements += 1
+                        socketio.emit('publish_undo_progress', {
+                            'step': 'deleting_statements',
+                            'blockId': block_id,
+                            'tripleId': stmt.get('tripleId'),
+                            'deleted': deleted_statements
+                        }, to=request.sid)
+                except Exception as e:
+                    errors.append(f"Failed to delete statement {claim_id}: {str(e)}")
+                    print(f"Error deleting statement {claim_id}: {e}", flush=True)
+
+        # Step 2: Delete all block items
+        published_blocks = publish_state.get('publishedBlocks', {})
+        for block_id, block_data in published_blocks.items():
+            try:
+                block_qid = block_data.get('blockQid')
+                if block_qid:
+                    delete_block_item(wbi, block_qid)
+                    deleted_blocks += 1
+                    socketio.emit('publish_undo_progress', {
+                        'step': 'deleting_blocks',
+                        'blockId': block_id,
+                        'blockQid': block_qid,
+                        'deleted': deleted_blocks
+                    }, to=request.sid)
+            except Exception as e:
+                errors.append(f"Failed to delete block {block_qid}: {str(e)}")
+                print(f"Error deleting block {block_qid}: {e}", flush=True)
+
+        # Step 3: Reset the publish state file
+        user = data.get('user', '').lower()
+        doc = data.get('doc')
+        if user and doc:
+            state_file = f'/data/jobs/{user}/{doc}.publish.json'
+            if os.path.exists(state_file):
+                with file_lock(state_file):
+                    with open(state_file, 'r') as f:
+                        current_state = json.load(f)
+                    # Reset published data but keep document and s3 info
+                    current_state['publishedStatements'] = {}
+                    current_state['publishedBlocks'] = {}
+                    current_state['currentStep'] = 4
+                    with open(state_file, 'w') as f:
+                        json.dump(current_state, f, indent=2)
+
+        return {
+            'success': True,
+            'error': None,
+            'deletedStatements': deleted_statements,
+            'deletedBlocks': deleted_blocks,
+            'errors': errors if errors else None
+        }
+
+    except Exception as e:
+        print(f"Error during undo: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
 
 if __name__ == '__main__':
 

@@ -3,6 +3,7 @@ import { socket } from "@/socket";
 import { useUserStore } from '@/stores/user'
 import LoginModal from '@/components/LoginModal.vue'
 import JobStatus from '@/components/JobStatus.vue'
+import ApiKeyModal from '@/components/ApiKeyModal.vue'
 
 import { mapWritableState } from "pinia";
 
@@ -13,7 +14,8 @@ export default {
   name: 'HomeView',
   components: {
     LoginModal,
-    JobStatus
+    JobStatus,
+    ApiKeyModal
   },
   data() {
     return {
@@ -34,6 +36,7 @@ export default {
       modelOptions: ['gemini-3-pro-preview','gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-5'],
       additionalPromptInstructions: '',
       showAdditionalPrompt: false,
+      showApiKeyModal: false,
 
 
       
@@ -168,11 +171,18 @@ export default {
 
   <LoginModal v-if="!isAuthenticated"/>
   <template v-else>
+    <ApiKeyModal v-if="showApiKeyModal" @close="showApiKeyModal = false" />
     <div class="home">
+
+      <button class="button is-light gear-btn" @click="showApiKeyModal = true" title="API Key Settings">
+        <span class="icon">
+          <font-awesome-icon :icon="['fas', 'gear']" size="lg" />
+        </span>
+      </button>
 
       <div class="columns">
         <div class="column">
-          <h1 class="is-size-2	">❱Dashboard </h1>
+          <h1 class="is-size-2">❱Dashboard</h1>
           <hr>
 
           <button class="button" @click="newJob= (newJob == false) ? true : false">
@@ -331,6 +341,13 @@ export default {
 
 .home{
   padding: 1em;
+  position: relative;
+}
+.gear-btn {
+  position: absolute;
+  top: 1em;
+  right: 1em;
+  font-size: 1.25rem;
 }
 .textarea{
   min-height: 600px;

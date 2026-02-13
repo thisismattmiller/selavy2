@@ -6,6 +6,7 @@ gcloud_keys.json
 app/gcloud_keys.json
 data/jobs/*
 data/logs/*
+data/user_api_keys.json
 .DS_Store
 # C extensions
 *.so

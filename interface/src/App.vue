@@ -4,7 +4,7 @@ import HelloWorld from './components/HelloWorld.vue'
 import { useConnectionStore } from "@/stores/connection";
 import { useUserStore } from "@/stores/user";
 
-import { socket } from "@/socket";
+import { socket, state as socketState } from "@/socket";
 import { mapStores, mapState, mapWritableState } from 'pinia'
 
 import ConnectionStatusModal from './components/ConnectionStatusModal.vue'
@@ -26,11 +26,11 @@ export default {
     return {
       count: 0,
       showModal: true,
-
+      socketState,
     }
   },
   computed: {
-   
+
     ...mapStores(useConnectionStore),
     ...mapState(useConnectionStore, ['isConnected']),
     ...mapWritableState(useUserStore, ['isAuthenticated', 'user','login_token']),
@@ -42,13 +42,20 @@ export default {
   methods: {
     increment() {
       this.count++
-    }
+    },
+    dismissApiKeyError() {
+      socketState.apiKeyError = null;
+    },
   },
 
   created() {
     socket.off();
     // itemStore.bindEvents();
-    this.connectionStore.bindEvents();   
+    this.connectionStore.bindEvents();
+    // Re-register global listeners that socket.off() cleared
+    socket.on("api_key_error", (data) => {
+      socketState.apiKeyError = data;
+    });
   },
 
 
@@ -81,6 +88,15 @@ export default {
 <template>
 
 
+  <div v-if="socketState.apiKeyError" class="api-key-error-banner">
+    <div class="api-key-error-content">
+      <strong>API Key Error ({{ socketState.apiKeyError.provider }})</strong>
+      <p>{{ socketState.apiKeyError.message }}</p>
+      <p>Go to the gear icon on the Dashboard to update or remove your custom API key.</p>
+      <button class="button is-small is-dark" @click="dismissApiKeyError">Dismiss</button>
+    </div>
+  </div>
+
   <template v-if="!isConnected">
     <ConnectionStatusModal />
   </template>
@@ -89,6 +105,28 @@ export default {
 </template>
 
 <style scoped>
+.api-key-error-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background-color: #cc0000;
+  color: #fff;
+  padding: 1rem 2rem;
+  z-index: 9999;
+  text-align: center;
+}
+.api-key-error-banner strong {
+  font-size: 1.2rem;
+}
+.api-key-error-banner p {
+  margin: 0.25rem 0;
+}
+.api-key-error-content {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
 header {
   line-height: 1.5;
   max-height: 100vh;

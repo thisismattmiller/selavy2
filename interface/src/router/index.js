@@ -3,6 +3,7 @@ import HomeView from '../views/HomeView.vue'
 import WorkLMMReview from '../views/WorkLMMReview.vue'
 import WorkNER from '../views/WorkNER.vue'
 import WorkBlocks from '../views/WorkBlocks.vue'
+import WorkPublish from '../views/WorkPublish.vue'
 
 
 
@@ -33,6 +34,12 @@ const router = createRouter({
       component: WorkBlocks,
     },
 
+    {
+      path: '/publish/:id',
+      name: 'publish',
+      props: true,
+      component: WorkPublish,
+    },
     {
       path: '/about',
       name: 'about',
