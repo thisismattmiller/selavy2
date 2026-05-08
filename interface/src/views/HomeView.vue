@@ -28,10 +28,13 @@ export default {
       geminiModel: null,
       docText:null,
       jobs: [],
+      publicJobs: [],
+      activeTab: 'mine',
+      publicSearch: '',
       activeJobsTimer:null,
 
       uiCounter: 0,
-      
+
       selectedModel: 'gemini-3-pro-preview',
       modelOptions: ['gemini-3-pro-preview','gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-5'],
       additionalPromptInstructions: '',
@@ -43,11 +46,18 @@ export default {
     }
   },
   computed: {
-   
+
    //  ...mapStores(useUserStore),
     ...mapWritableState(useUserStore, ['isAuthenticated', 'user']),
- 
- 
+
+    filteredPublicJobs() {
+      const q = (this.publicSearch || '').trim().toLowerCase();
+      if (!q) return this.publicJobs;
+      return this.publicJobs.filter(j =>
+        (j.title || '').toLowerCase().includes(q)
+      );
+    },
+
    },
 
   watch: {
@@ -101,13 +111,33 @@ export default {
             this.activeJobsTimer = setInterval(() => {
               this.getJobs();
             }, 5000);
-          } 
-          
+          }
+
 
         } else {
           alert("Error fetching jobs");
         }
       })
+    },
+
+    getPublicJobs() {
+      this.uiCounter++;
+      socket.emit('public_jobs_list', {}, (response) => {
+        if (response && response.success) {
+          this.publicJobs = response.jobs;
+        } else {
+          alert("Error fetching public documents");
+        }
+      });
+    },
+
+    selectTab(tab) {
+      this.activeTab = tab;
+      if (tab === 'public') {
+        this.getPublicJobs();
+      } else {
+        this.getJobs();
+      }
     },
 
     processText() {
@@ -303,21 +333,55 @@ export default {
 
         </div>
         <div class="column">
-          
+
           <h1 class="is-size-2	">&nbsp;</h1>
           <hr>
 
-          <h2 class="is-size-4">❱Your Documents</h2>
-          <div v-if="jobs.length==0"> 
-            <p style="font-style: italic; padding-left: 1em; padding-top: 1em;">No documents found.</p>
+          <div class="tabs">
+            <ul>
+              <li :class="{ 'is-active': activeTab === 'mine' }">
+                <a @click.prevent="selectTab('mine')">❱Your Documents</a>
+              </li>
+              <li :class="{ 'is-active': activeTab === 'public' }">
+                <a @click.prevent="selectTab('public')">❱Public Documents</a>
+              </li>
+            </ul>
           </div>
 
-          <template v-for="job in jobs" v-bind:key="job.id + '-' + uiCounter">
-            <JobStatus :jobId="job.id" :jobData="job"  />
-            
+          <template v-if="activeTab === 'mine'">
+            <div v-if="jobs.length==0">
+              <p style="font-style: italic; padding-left: 1em; padding-top: 1em;">No documents found.</p>
+            </div>
 
+            <template v-for="job in jobs" v-bind:key="job.id + '-' + uiCounter">
+              <JobStatus :jobId="job.id" :jobData="job"  />
+            </template>
+          </template>
 
-            
+          <template v-else>
+            <div class="field" style="margin-bottom: 1em;">
+              <div class="control has-icons-left">
+                <input
+                  class="input"
+                  type="text"
+                  placeholder="Search public documents by title..."
+                  v-model="publicSearch"
+                />
+                <span class="icon is-small is-left">
+                  <font-awesome-icon :icon="['fas', 'magnifying-glass']" />
+                </span>
+              </div>
+            </div>
+
+            <div v-if="filteredPublicJobs.length==0">
+              <p style="font-style: italic; padding-left: 1em; padding-top: 1em;">
+                {{ publicJobs.length === 0 ? 'No public documents found.' : 'No documents match your search.' }}
+              </p>
+            </div>
+
+            <template v-for="job in filteredPublicJobs" v-bind:key="job.id + '-pub-' + uiCounter">
+              <JobStatus :jobId="job.id" :jobData="job" :ownerOverride="job.owner" />
+            </template>
           </template>
 
         </div>

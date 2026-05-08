@@ -26,6 +26,48 @@ def file_lock(filepath):
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
+
+def find_job_owner(job_id):
+    """Scan all user dirs for a job_id, return owner username or None."""
+    if not os.path.exists('/data/jobs'):
+        return None
+    for user_dir in os.listdir('/data/jobs'):
+        if os.path.exists(f'/data/jobs/{user_dir}/{job_id}.meta.json'):
+            return user_dir
+    return None
+
+
+def resolve_doc_owner(user, job_id, require_public_for_fallback=True):
+    """
+    Find the directory that holds {job_id} files.
+
+    First tries `/data/jobs/{user}/`. If the doc isn't there, scans all user
+    dirs. When `require_public_for_fallback` is True, the fallback path is
+    only returned if the doc is marked public.
+
+    Returns the owner username (= directory name) or None if not found / not allowed.
+    """
+    if user:
+        user = user.lower()
+        if os.path.exists(f'/data/jobs/{user}/{job_id}.meta.json'):
+            return user
+
+    owner = find_job_owner(job_id)
+    if owner is None:
+        return None
+
+    if not require_public_for_fallback:
+        return owner
+
+    try:
+        with open(f'/data/jobs/{owner}/{job_id}.meta.json') as f:
+            meta = json.load(f)
+        if meta.get('public') is True:
+            return owner
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
 # from lib.doc_diff import build_doc_diffs
 from lib.doc_diff_new import build_doc_diffs
 
@@ -310,7 +352,11 @@ def handle_get_document_status(job_data):
         else:
             job_data["user"] = "none"
 
-    
+    owner = resolve_doc_owner(job_data.get("user"), job_data["doc"])
+    if owner is None:
+        return {'success': False, 'error': 'Doc not found'}
+    job_data["user"] = owner
+
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json') as f:
             job_data = json.load(f)
@@ -357,6 +403,11 @@ def handle_get_ner(job_data):
         if job_data["user"] != None:
             job_data["user"] = job_data["user"].lower()
 
+    owner = resolve_doc_owner(job_data.get("user"), job_data["doc"])
+    if owner is None:
+        return {'success': False, 'error': 'Doc not found'}
+    job_data["user"] = owner
+
     # check if the job exists
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json') as f:
@@ -384,6 +435,11 @@ def handle_update_document_status(job_data):
     if 'user' in job_data:
         if job_data["user"] != None:
             job_data["user"] = job_data["user"].lower()
+
+    owner = resolve_doc_owner(job_data.get("user"), job_data["doc"])
+    if owner is None:
+        return {'success': False, 'error': 'Doc not found'}
+    job_data["user"] = owner
 
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.meta.json') as f:
@@ -419,6 +475,11 @@ def handle_get_document_diffs(job_data):
         if job_data["user"] != None:
             job_data["user"] = job_data["user"].lower()
 
+    owner = resolve_doc_owner(job_data.get("user"), job_data["doc"])
+    if owner is None:
+        return {'success': False, 'error': 'Doc not found'}
+    job_data["user"] = owner
+
     if os.path.exists(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'):
         with open(f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json') as f:
             job_data = json.load(f)
@@ -433,6 +494,11 @@ def handle_update_document_markup(job_data):
     if 'user' in job_data:
         if job_data["user"] != None:
             job_data["user"] = job_data["user"].lower()
+
+    owner = resolve_doc_owner(job_data.get("user"), job_data["doc"])
+    if owner is None:
+        return {'success': False, 'error': 'Doc not found'}
+    job_data["user"] = owner
 
     data_file = f'/data/jobs/{job_data["user"]}/{job_data["doc"]}.json'
 
@@ -489,19 +555,12 @@ def handle_update_text_markup(data):
         if user:
             user = user.lower()
 
-        # Build the job file path
-        if user:
-            job_file_path = f'/data/jobs/{user}/{job_id}.json'
-        else:
-            # If no user provided, search all user directories
-            job_file_path = None
-            for user_dir in glob.glob('/data/jobs/*'):
-                potential_path = f'{user_dir}/{job_id}.json'
-                if os.path.exists(potential_path):
-                    job_file_path = potential_path
-                    break
+        owner = resolve_doc_owner(user, job_id)
+        if owner is None:
+            return {'success': False, 'error': f'Job {job_id} not found'}
 
-        if not job_file_path or not os.path.exists(job_file_path):
+        job_file_path = f'/data/jobs/{owner}/{job_id}.json'
+        if not os.path.exists(job_file_path):
             return {'success': False, 'error': f'Job {job_id} not found'}
 
         with file_lock(job_file_path):
@@ -561,7 +620,8 @@ def handle_process_text(json_data):
         "status": 'PRE_LLM_MARKUP',
         'status_percent': None,
         "model": json_data.get('model'),
-        "additionalInstructions": json_data.get('additionalInstructions')
+        "additionalInstructions": json_data.get('additionalInstructions'),
+        "public": False,
     }
 
     with open(f'{user_jobs_dir}{job_id}.json','w') as out:
@@ -573,9 +633,10 @@ def handle_process_text(json_data):
             "id": job_id,
             "title": json_data['title'],
             "status": 'PRE_LLM_MARKUP',
-            "user": json_data['user'],  
+            "user": json_data['user'],
             "created_at": formatted_date_time,
             'status_percent': None,
+            "public": False,
         },out)
 
     # socketio.emit('job_status', {'id': job_id, 'status': 'PRE_LLM_MARKUP'})
@@ -644,6 +705,88 @@ def handle_jobs_list(data):
     return {'success': True, 'jobs': my_jobs }
 
 
+@socketio.on('public_jobs_list')
+def handle_public_jobs_list(data=None):
+    """List all jobs across all users that are marked public."""
+    public_jobs = []
+    if not os.path.exists('/data/jobs'):
+        return {'success': True, 'jobs': []}
+
+    for user_dir in os.listdir('/data/jobs'):
+        user_jobs_dir = f'/data/jobs/{user_dir}/'
+        if not os.path.isdir(user_jobs_dir):
+            continue
+        for file in glob.glob(f'{user_jobs_dir}*.meta.json'):
+            try:
+                with open(file) as f:
+                    job_data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            if job_data.get('public') is not True:
+                continue
+
+            if isinstance(job_data.get('status'), list):
+                job_data['status'] = job_data['status'][0]
+
+            job_data['owner'] = user_dir
+            public_jobs.append(job_data)
+
+    public_jobs.sort(
+        key=lambda x: x.get('created_at', ''),
+        reverse=True,
+    )
+    return {'success': True, 'jobs': public_jobs}
+
+
+@socketio.on('set_document_public')
+def handle_set_document_public(data):
+    """
+    Toggle the public flag on a document. Only the owner may change it.
+
+    Args:
+        data: dict with 'doc' (job_id), 'user' (requesting user), and 'public' (bool)
+    """
+    try:
+        job_id = data.get('doc')
+        requesting_user = (data.get('user') or '').lower()
+        new_public = bool(data.get('public'))
+
+        if not job_id:
+            return {'success': False, 'error': 'Missing doc'}
+        if not requesting_user:
+            return {'success': False, 'error': 'Missing user'}
+
+        owner = find_job_owner(job_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+
+        if owner != requesting_user:
+            return {'success': False, 'error': 'Only the owner can change visibility'}
+
+        meta_file = f'/data/jobs/{owner}/{job_id}.meta.json'
+        data_file = f'/data/jobs/{owner}/{job_id}.json'
+
+        with file_lock(meta_file):
+            with open(meta_file) as f:
+                meta = json.load(f)
+            meta['public'] = new_public
+            with open(meta_file, 'w') as f:
+                json.dump(meta, f)
+
+        if os.path.exists(data_file):
+            with file_lock(data_file):
+                with open(data_file) as f:
+                    job = json.load(f)
+                job['public'] = new_public
+                with open(data_file, 'w') as f:
+                    json.dump(job, f)
+
+        return {'success': True, 'error': None, 'public': new_public}
+
+    except Exception as e:
+        print(f"Error setting document public: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
 
 
 
@@ -766,7 +909,10 @@ def handle_delete_job(job_id):
 @socketio.on('save_ner_entities')
 def handle_save_ner_entities(data):
     # print(data['user'], data['job_id'], data['entities'], flush=True)
-    data_file = f'/data/jobs/{data["user"].lower()}/{data["job_id"]}.json'
+    owner = resolve_doc_owner(data.get("user"), data["job_id"])
+    if owner is None:
+        return {'success': False, 'error': "Job not found"}
+    data_file = f'/data/jobs/{owner}/{data["job_id"]}.json'
 
     if not os.path.exists(data_file):
         return {'success': False, 'error': "Job not found"}
@@ -805,7 +951,10 @@ def handle_save_convenience_entities(data):
         else:
             return {'success': False, 'error': 'Missing user'}
 
-        data_file = f'/data/jobs/{user}/{document_id}.json'
+        owner = resolve_doc_owner(user, document_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+        data_file = f'/data/jobs/{owner}/{document_id}.json'
 
         if not os.path.exists(data_file):
             return {'success': False, 'error': 'Job not found'}
@@ -847,7 +996,10 @@ def handle_get_document_meta(data):
         if user:
             user = user.lower()
 
-        data_file = f'/data/jobs/{user}/{document_id}.json'
+        owner = resolve_doc_owner(user, document_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+        data_file = f'/data/jobs/{owner}/{document_id}.json'
 
         if not os.path.exists(data_file):
             return {'success': False, 'error': 'Job not found'}
@@ -888,7 +1040,10 @@ def handle_update_document_meta(data):
         else:
             return {'success': False, 'error': 'Missing user'}
 
-        data_file = f'/data/jobs/{user}/{document_id}.json'
+        owner = resolve_doc_owner(user, document_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+        data_file = f'/data/jobs/{owner}/{document_id}.json'
 
         if not os.path.exists(data_file):
             return {'success': False, 'error': 'Job not found'}
@@ -935,7 +1090,10 @@ def handle_get_convenience_entities(data):
         if user:
             user = user.lower()
 
-        data_file = f'/data/jobs/{user}/{document_id}.json'
+        owner = resolve_doc_owner(user, document_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+        data_file = f'/data/jobs/{owner}/{document_id}.json'
 
         if not os.path.exists(data_file):
             return {'success': False, 'error': 'Job not found'}
@@ -974,8 +1132,10 @@ def handle_get_triples(data):
         if user:
             user = user.lower()
 
-        # Build the job file path
-        data_file = f'/data/jobs/{user}/{document_id}.json'
+        owner = resolve_doc_owner(user, document_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+        data_file = f'/data/jobs/{owner}/{document_id}.json'
 
         if not os.path.exists(data_file):
             return {'success': False, 'error': 'Job not found'}
@@ -1020,8 +1180,10 @@ def handle_save_triples(data):
         else:
             return {'success': False, 'error': 'Missing user'}
 
-        # Build the job file path
-        data_file = f'/data/jobs/{user}/{document_id}.json'
+        owner = resolve_doc_owner(user, document_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+        data_file = f'/data/jobs/{owner}/{document_id}.json'
 
         if not os.path.exists(data_file):
             return {'success': False, 'error': 'Job not found'}
@@ -1073,7 +1235,11 @@ def handle_publish_get_state(data):
         if not doc or not user:
             return {'success': False, 'error': 'Missing user or doc'}
 
-        state_file = f'/data/jobs/{user}/{doc}.publish.json'
+        owner = resolve_doc_owner(user, doc)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+
+        state_file = f'/data/jobs/{owner}/{doc}.publish.json'
         if not os.path.exists(state_file):
             return {'success': True, 'error': None, 'publishState': None}
 
@@ -1095,7 +1261,11 @@ def handle_publish_save_state(data):
         if not doc or not user:
             return {'success': False, 'error': 'Missing user or doc'}
 
-        state_file = f'/data/jobs/{user}/{doc}.publish.json'
+        owner = resolve_doc_owner(user, doc)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+
+        state_file = f'/data/jobs/{owner}/{doc}.publish.json'
         with file_lock(state_file):
             with open(state_file, 'w') as f:
                 json.dump(publish_state, f, indent=2)
@@ -1432,8 +1602,9 @@ def handle_publish_undo(data):
         user = data.get('user', '').lower()
         doc = data.get('doc')
         if user and doc:
-            state_file = f'/data/jobs/{user}/{doc}.publish.json'
-            if os.path.exists(state_file):
+            owner = resolve_doc_owner(user, doc)
+            state_file = f'/data/jobs/{owner}/{doc}.publish.json' if owner else None
+            if state_file and os.path.exists(state_file):
                 with file_lock(state_file):
                     with open(state_file, 'r') as f:
                         current_state = json.load(f)

@@ -2,17 +2,38 @@
   
   <div v-if="isVisible" class="card" :class="{ 'deleting': isDeleting }">
     <div class="card-content">
-      <button class="delete-button" @click="deleteJob" title="Delete Job">
+      <button v-if="isOwner" class="delete-button" @click="deleteJob" title="Delete Job">
         <font-awesome-icon :icon="['fas', 'trash']" />
       </button>
       <div class="content">
         <div class="columns">
           <div class="column">
 
-            <p><strong>{{ job.title }}</strong></p>
+            <p>
+              <strong>{{ job.title }}</strong>
+              <span v-if="job.public" class="tag is-info is-light public-tag">Public</span>
+            </p>
+            <p v-if="!isOwner && job.user" class="owner-line">
+              <span class="icon is-small"><font-awesome-icon :icon="['fas', 'user']" /></span>
+              <span>{{ job.user }}</span>
+            </p>
             <p > Status: <div v-if="job.status=='LLM_MARKING_UP' || job.status == 'PRE_LLM_MARKUP'"  class="flashing-dot"></div>  {{ job.status }}</p>
             <p style="line-break: anywhere;" v-if="job.status=='LLM_MARKING_UP' || job.status == 'PRE_LLM_MARKUP' || job.status.indexOf('ERROR') > -1"> Percent:   {{ job.status_percent   }}</p>
             <p>Created At: {{ job.created_at }}</p>
+            <p v-if="isOwner" style="margin-top: 0.5em;">
+              <button
+                class="button is-small"
+                :class="job.public ? 'is-info' : 'is-light'"
+                :disabled="togglingPublic"
+                @click="togglePublic"
+                :title="job.public ? 'Click to make private' : 'Click to make public'"
+              >
+                <span class="icon is-small">
+                  <font-awesome-icon :icon="['fas', job.public ? 'eye' : 'eye-slash']" />
+                </span>
+                <span>{{ job.public ? 'Public' : 'Private' }}</span>
+              </button>
+            </p>
           </div>
 
 
@@ -119,6 +140,10 @@ export default {
      jobData: {
       type: Object,
       default: () => ({})
+     },
+     ownerOverride: {
+      type: String,
+      default: null
      }
   },
   data() {
@@ -128,18 +153,26 @@ export default {
         title: "Loading...",
         status: "Loading...",
         status_percent: 0,
-        created_at: "Loading..."
+        created_at: "Loading...",
+        public: false,
+        user: null
       },
       isVisible: true,
-      isDeleting: false
-      
+      isDeleting: false,
+      togglingPublic: false
+
     }
   },
   computed: {
-   
+
   //  ...mapStores(useUserStore),
    ...mapWritableState(useUserStore, ['isAuthenticated', 'user']),
 
+    isOwner() {
+      const docUser = (this.job && this.job.user) || this.ownerOverride;
+      if (!docUser || !this.user) return false;
+      return String(docUser).toLowerCase() === String(this.user).toLowerCase();
+    },
 
   },
 
@@ -155,7 +188,8 @@ export default {
     async initialize() {
       // Initialize the component
       console.log("Initializing JobStatus for jobId:", this.jobId);
-      socket.emit('get_document_status', {doc:this.jobId, user:this.user}, (response) => {
+      const userForLookup = this.ownerOverride || this.user;
+      socket.emit('get_document_status', {doc:this.jobId, user:userForLookup}, (response) => {
         console.log("response",response)
         if (response.success) {
           this.job = response.job_data
@@ -172,19 +206,37 @@ export default {
 
     deleteJob() {
       const confirmed = confirm(`Are you sure you want to delete the job "${this.job.title}"? This action cannot be undone.`);
-      
+
       if (!confirmed) {
         return;
       }
-      
+
       this.isDeleting = true;
       setTimeout(() => {
         this.isVisible = false;
         this.$emit('delete', this.job.id);
         socket.emit('delete_job', this.job.id);
       }, 400); // Wait for animation to complete
+    },
+
+    togglePublic() {
+      if (this.togglingPublic) return;
+      const next = !this.job.public;
+      this.togglingPublic = true;
+      socket.emit('set_document_public', {
+        doc: this.job.id,
+        user: this.user,
+        public: next
+      }, (response) => {
+        this.togglingPublic = false;
+        if (response && response.success) {
+          this.job.public = response.public;
+        } else {
+          alert((response && response.error) || "Failed to change visibility");
+        }
+      });
     }
-    
+
   },
   mounted() {
      // Component lifecycle hook when component is mounted
@@ -259,6 +311,18 @@ export default {
 }
 .workflow-status{
   padding-left: 1rem;
+}
+.public-tag {
+  margin-left: 0.5em;
+  vertical-align: middle;
+}
+.owner-line {
+  font-size: 0.85em;
+  opacity: 0.75;
+  margin-top: -0.25em;
+}
+.owner-line .icon {
+  margin-right: 0.25em;
 }
 @media (prefers-color-scheme: dark) {
   
