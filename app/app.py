@@ -12,6 +12,9 @@ import glob
 from datetime import datetime
 import requests
 import fcntl
+import io
+import zipfile
+import base64
 from contextlib import contextmanager
 
 
@@ -901,8 +904,199 @@ def handle_delete_job(job_id):
                 deleted_files.append(os.path.basename(file_path))
         
         return {'success': True, 'error': None, 'deleted_files': deleted_files}
-        
+
     except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+
+BUNDLE_FILE_SUFFIXES = ['.json', '.meta.json', '.publish.json']
+BUNDLE_LOG_SUFFIXES = ['_output.log', '_error.log']
+BUNDLE_SCHEMA_VERSION = 1
+
+
+@socketio.on('bundle_load_enabled')
+def handle_bundle_load_enabled(data=None):
+    """Tell the client whether the load-bundle button should be shown."""
+    enabled = os.environ.get('ALLOW_BUNDLE_LOAD', '').strip() in ('1', 'true', 'yes', 'on')
+    return {'success': True, 'enabled': enabled}
+
+
+@socketio.on('download_doc_bundle')
+def handle_download_doc_bundle(data):
+    """
+    Build an in-memory zip of all per-doc files and return as base64.
+
+    Args:
+        data: {'doc': job_id, 'user': requesting_user, 'include_logs': bool}
+    """
+    try:
+        job_id = data.get('doc')
+        requesting_user = (data.get('user') or '').lower()
+        include_logs = bool(data.get('include_logs'))
+
+        if not job_id:
+            return {'success': False, 'error': 'Missing doc'}
+        if not requesting_user:
+            return {'success': False, 'error': 'Missing user'}
+
+        owner = find_job_owner(job_id)
+        if owner is None:
+            return {'success': False, 'error': 'Job not found'}
+
+        owner_dir = f'/data/jobs/{owner}/'
+
+        suffixes = list(BUNDLE_FILE_SUFFIXES)
+        if include_logs:
+            suffixes.extend(BUNDLE_LOG_SUFFIXES)
+
+        bundled_files = []
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            manifest = {
+                'schema_version': BUNDLE_SCHEMA_VERSION,
+                'job_id': job_id,
+                'source_user': owner,
+                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'include_logs': include_logs,
+            }
+            zf.writestr('manifest.json', json.dumps(manifest, indent=2))
+
+            for suffix in suffixes:
+                src = f'{owner_dir}{job_id}{suffix}'
+                if os.path.exists(src):
+                    zf.write(src, arcname=f'{job_id}{suffix}')
+                    bundled_files.append(f'{job_id}{suffix}')
+
+        zip_bytes = buf.getvalue()
+        zip_b64 = base64.b64encode(zip_bytes).decode('ascii')
+
+        return {
+            'success': True,
+            'error': None,
+            'filename': f'prelavy-doc-{job_id}.zip',
+            'content_b64': zip_b64,
+            'bundled_files': bundled_files,
+        }
+
+    except Exception as e:
+        print(f"Error building doc bundle: {e}", flush=True)
+        return {'success': False, 'error': str(e)}
+
+
+@socketio.on('load_doc_bundle')
+def handle_load_doc_bundle(data):
+    """
+    Load a doc bundle into the local /data/jobs/{target_user}/ directory.
+
+    Preserves the original job_id; refuses if the id already exists locally
+    unless `force` is true (in which case existing files are overwritten).
+    Rewrites the `user` field in {id}.json and {id}.meta.json to target_user.
+
+    Args:
+        data: {'content_b64': str, 'target_user': str, 'force': bool}
+    """
+    try:
+        if os.environ.get('ALLOW_BUNDLE_LOAD', '').strip() not in ('1', 'true', 'yes', 'on'):
+            return {'success': False, 'error': 'Bundle loading is disabled on this server'}
+
+        zip_b64 = data.get('content_b64')
+        target_user = (data.get('target_user') or '').lower()
+        force = bool(data.get('force'))
+
+        if not zip_b64:
+            return {'success': False, 'error': 'Missing content_b64'}
+        if not target_user:
+            return {'success': False, 'error': 'Missing target_user'}
+
+        try:
+            zip_bytes = base64.b64decode(zip_b64)
+        except Exception:
+            return {'success': False, 'error': 'Bundle content is not valid base64'}
+
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        except zipfile.BadZipFile:
+            return {'success': False, 'error': 'Bundle is not a valid zip file'}
+
+        names = zf.namelist()
+        if 'manifest.json' not in names:
+            return {'success': False, 'error': 'Bundle is missing manifest.json'}
+
+        try:
+            manifest = json.loads(zf.read('manifest.json').decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return {'success': False, 'error': f'Bundle manifest is unreadable: {e}'}
+
+        job_id = manifest.get('job_id')
+        if not job_id:
+            return {'success': False, 'error': 'Manifest missing job_id'}
+
+        # Reject path traversal in zip entries
+        for name in names:
+            if name == 'manifest.json':
+                continue
+            if name.startswith('/') or '..' in name.split('/'):
+                return {'success': False, 'error': f'Bundle contains unsafe path: {name}'}
+            # Each entry must start with the job_id and a known suffix
+            allowed = any(name == f'{job_id}{suffix}' for suffix in BUNDLE_FILE_SUFFIXES + BUNDLE_LOG_SUFFIXES)
+            if not allowed:
+                return {'success': False, 'error': f'Bundle contains unexpected file: {name}'}
+
+        target_dir = f'/data/jobs/{target_user}/'
+        os.makedirs(target_dir, exist_ok=True)
+
+        # Check for collision unless forcing
+        existing_owner = find_job_owner(job_id)
+        if existing_owner is not None and not force:
+            return {
+                'success': False,
+                'error': f'Job {job_id} already exists locally under user "{existing_owner}". Use force to overwrite.',
+                'collision': True,
+                'existing_owner': existing_owner,
+            }
+
+        # If forcing and the existing copy is in a different user dir, remove
+        # those files first so we don't end up with two copies of the same id.
+        if existing_owner is not None and existing_owner != target_user:
+            old_dir = f'/data/jobs/{existing_owner}/'
+            for suffix in BUNDLE_FILE_SUFFIXES + BUNDLE_LOG_SUFFIXES:
+                old_path = f'{old_dir}{job_id}{suffix}'
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+
+        written = []
+        for name in names:
+            if name == 'manifest.json':
+                continue
+            content = zf.read(name)
+            dest = f'{target_dir}{name}'
+
+            # Rewrite user field in the json + meta.json
+            if name == f'{job_id}.json' or name == f'{job_id}.meta.json':
+                try:
+                    obj = json.loads(content.decode('utf-8'))
+                    if isinstance(obj, dict):
+                        obj['user'] = target_user
+                    content = json.dumps(obj, indent=2).encode('utf-8')
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    return {'success': False, 'error': f'Bundle file {name} is unreadable: {e}'}
+
+            with open(dest, 'wb') as f:
+                f.write(content)
+            written.append(name)
+
+        return {
+            'success': True,
+            'error': None,
+            'job_id': job_id,
+            'target_user': target_user,
+            'source_user': manifest.get('source_user'),
+            'written': written,
+            'overwrote': existing_owner is not None,
+        }
+
+    except Exception as e:
+        print(f"Error loading doc bundle: {e}", flush=True)
         return {'success': False, 'error': str(e)}
 
 

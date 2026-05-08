@@ -41,6 +41,9 @@ export default {
       showAdditionalPrompt: false,
       showApiKeyModal: false,
 
+      bundleLoadEnabled: false,
+      loadingBundle: false,
+
 
       
     }
@@ -85,13 +88,16 @@ export default {
 
 
       this.getJobs();
-      
+
       this.docText = null;
       this.geminiTokenCount = 0;
       this.geminiTokenLimit = 0;
       this.apiStatus = null;
 
-      
+      socket.emit('bundle_load_enabled', {}, (response) => {
+        this.bundleLoadEnabled = !!(response && response.enabled);
+      });
+
     },
 
     getJobs() {
@@ -138,6 +144,50 @@ export default {
       } else {
         this.getJobs();
       }
+    },
+
+    triggerBundlePicker() {
+      this.$refs.bundleFileInput && this.$refs.bundleFileInput.click();
+    },
+
+    onBundleFileChosen(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      this.uploadBundle(file, false);
+      event.target.value = '';
+    },
+
+    uploadBundle(file, force) {
+      const reader = new FileReader();
+      this.loadingBundle = true;
+      reader.onload = () => {
+        const result = reader.result || '';
+        const commaIdx = result.indexOf(',');
+        const b64 = commaIdx >= 0 ? result.slice(commaIdx + 1) : result;
+        socket.emit('load_doc_bundle', {
+          content_b64: b64,
+          target_user: this.user,
+          force: !!force
+        }, (response) => {
+          this.loadingBundle = false;
+          if (response && response.success) {
+            alert(`Loaded job ${response.job_id}${response.overwrote ? ' (overwrote existing)' : ''}.`);
+            this.getJobs();
+          } else if (response && response.collision) {
+            const msg = response.error + "\n\nOverwrite the existing copy?";
+            if (confirm(msg)) {
+              this.uploadBundle(file, true);
+            }
+          } else {
+            alert((response && response.error) || "Failed to load bundle");
+          }
+        });
+      };
+      reader.onerror = () => {
+        this.loadingBundle = false;
+        alert("Failed to read file");
+      };
+      reader.readAsDataURL(file);
     },
 
     processText() {
@@ -219,8 +269,30 @@ export default {
             <span class="icon is-small">
               <font-awesome-icon :icon="['fas', 'file-circle-plus']" />
             </span>
-            <span>Start New Job</span>                          
+            <span>Start New Job</span>
           </button>
+
+          <button
+            v-if="bundleLoadEnabled"
+            class="button is-light"
+            :disabled="loadingBundle"
+            @click="triggerBundlePicker"
+            style="margin-left: 0.5em;"
+            title="Load a doc bundle .zip exported from another instance"
+          >
+            <span class="icon is-small">
+              <font-awesome-icon :icon="['fas', loadingBundle ? 'spinner' : 'file-import']" />
+            </span>
+            <span>{{ loadingBundle ? 'Loading...' : 'Load Bundle' }}</span>
+          </button>
+          <input
+            v-if="bundleLoadEnabled"
+            ref="bundleFileInput"
+            type="file"
+            accept=".zip,application/zip"
+            style="display: none;"
+            @change="onBundleFileChosen"
+          />
           <template v-if="newJob">
 
 

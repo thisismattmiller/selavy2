@@ -20,8 +20,9 @@
             <p > Status: <div v-if="job.status=='LLM_MARKING_UP' || job.status == 'PRE_LLM_MARKUP'"  class="flashing-dot"></div>  {{ job.status }}</p>
             <p style="line-break: anywhere;" v-if="job.status=='LLM_MARKING_UP' || job.status == 'PRE_LLM_MARKUP' || job.status.indexOf('ERROR') > -1"> Percent:   {{ job.status_percent   }}</p>
             <p>Created At: {{ job.created_at }}</p>
-            <p v-if="isOwner" style="margin-top: 0.5em;">
+            <p style="margin-top: 0.5em;">
               <button
+                v-if="isOwner"
                 class="button is-small"
                 :class="job.public ? 'is-info' : 'is-light'"
                 :disabled="togglingPublic"
@@ -32,6 +33,19 @@
                   <font-awesome-icon :icon="['fas', job.public ? 'eye' : 'eye-slash']" />
                 </span>
                 <span>{{ job.public ? 'Public' : 'Private' }}</span>
+              </button>
+
+              <button
+                class="button is-small is-light"
+                :disabled="downloadingBundle"
+                @click="downloadBundle"
+                title="Download a zip of this doc's data for local debugging"
+                style="margin-left: 0.5em;"
+              >
+                <span class="icon is-small">
+                  <font-awesome-icon :icon="['fas', downloadingBundle ? 'spinner' : 'download']" />
+                </span>
+                <span>{{ downloadingBundle ? 'Bundling...' : 'Download Bundle' }}</span>
               </button>
             </p>
           </div>
@@ -159,7 +173,8 @@ export default {
       },
       isVisible: true,
       isDeleting: false,
-      togglingPublic: false
+      togglingPublic: false,
+      downloadingBundle: false
 
     }
   },
@@ -234,6 +249,34 @@ export default {
         } else {
           alert((response && response.error) || "Failed to change visibility");
         }
+      });
+    },
+
+    downloadBundle() {
+      if (this.downloadingBundle) return;
+      this.downloadingBundle = true;
+      socket.emit('download_doc_bundle', {
+        doc: this.job.id,
+        user: this.user,
+        include_logs: true
+      }, (response) => {
+        this.downloadingBundle = false;
+        if (!response || !response.success) {
+          alert((response && response.error) || "Failed to build bundle");
+          return;
+        }
+        const binary = atob(response.content_b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'application/zip' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = response.filename || `prelavy-doc-${this.job.id}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       });
     }
 
